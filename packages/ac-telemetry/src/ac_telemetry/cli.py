@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from .config import ProcessingConfig
+from .manifest import DATASET_SCHEMA_VERSION, require_compatible_schema, table_manifest
 from .pipeline import load_dataset_table, preprocess_dataset
 from .replay import inspect_replay
 from .storage import DatasetStorage
@@ -121,12 +122,13 @@ def command_export(args: argparse.Namespace) -> int:
 def command_merge(args: argparse.Namespace) -> int:
     roots = [Path(item).resolve() for item in args.datasets]
     output = Path(args.output).resolve()
+    manifests = [json_load(root / "manifest.json") for root in roots]
+    require_compatible_schema(manifests)
     if output.exists():
         if not args.overwrite:
             raise FileExistsError(f"Output directory exists: {output}")
         shutil.rmtree(output)
     output.mkdir(parents=True)
-    manifests = [json_load(root / "manifest.json") for root in roots]
     logical_names = sorted(set.intersection(*(set(m["tables"]) for m in manifests)))
     storage = DatasetStorage(output, args.storage)
     refs = []
@@ -135,15 +137,12 @@ def command_merge(args: argparse.Namespace) -> int:
         merged = pd.concat(frames, ignore_index=True).drop_duplicates()
         refs.append(storage.write(logical, merged))
     manifest = {
-        "schema_version": "2",
+        "schema_version": DATASET_SCHEMA_VERSION,
         "tool_version": manifests[0].get("tool_version"),
         "dataset_id": "merged-" + "-".join(m["dataset_id"][:8] for m in manifests),
         "table_format": storage.format,
         "source_datasets": [str(root) for root in roots],
-        "tables": {
-            ref.name: {"path": ref.relative_path, "rows": ref.rows, "columns": ref.columns}
-            for ref in refs
-        },
+        "tables": table_manifest(refs),
         "warnings": ["Only tables common to every input dataset were merged"],
     }
     json_dump(output / "manifest.json", manifest)

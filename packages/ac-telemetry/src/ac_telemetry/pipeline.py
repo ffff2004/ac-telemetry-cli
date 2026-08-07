@@ -9,6 +9,7 @@ import pandas as pd
 from . import __version__
 from .config import ProcessingConfig
 from .events import detect_all_events
+from .manifest import DATASET_SCHEMA_VERSION, table_manifest
 from .replay import load_replay
 from .segments import load_segment_definitions, segment_passes
 from .setup_parser import build_setup_diffs, parse_setup_bundle
@@ -16,13 +17,6 @@ from .storage import DatasetStorage, TableRef
 from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, sha256_file, stable_id, utc_now_iso
 from .validation import validate_dataset
-
-
-def _table_manifest(refs: list[TableRef]) -> dict[str, dict[str, Any]]:
-    return {
-        ref.name: {"path": ref.relative_path, "rows": ref.rows, "columns": ref.columns}
-        for ref in refs
-    }
 
 
 def preprocess_dataset(
@@ -154,7 +148,7 @@ def preprocess_dataset(
 
     dataset_id = stable_id(*(item["sha256"] for item in source_files), __version__)
     manifest = {
-        "schema_version": "2",
+        "schema_version": DATASET_SCHEMA_VERSION,
         "tool_version": __version__,
         "dataset_id": dataset_id,
         "created_at": utc_now_iso(),
@@ -164,7 +158,7 @@ def preprocess_dataset(
         "progress_method": "normalized cumulative horizontal path distance per lap",
         "progress_source": "cumulative_distance_proxy",
         "segment_definition_source": str(segment_path) if segment_path else None,
-        "tables": _table_manifest(refs),
+        "tables": table_manifest(refs),
         "warnings": [
             "Parquet unavailable; CSV fallback used" if storage.format == "csv" else None,
             "Native AC normalized spline position is not present in parsed replay data",
