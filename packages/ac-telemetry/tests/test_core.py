@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ac_telemetry.util import close_short_false_gaps, contiguous_true_runs, parse_date_from_ac_filename
+from ac_telemetry.util import close_short_false_gaps, contiguous_true_runs, parse_datetime_from_ac_filename
 
 
 def test_true_runs() -> None:
@@ -16,7 +16,11 @@ def test_close_gaps() -> None:
     assert result.tolist() == [True, True, True, False, False, True]
 
 
-def test_date_parser() -> None:
+def test_datetime_parser() -> None:
+    from datetime import datetime
     from pathlib import Path
 
-    assert parse_date_from_ac_filename(Path("AC_300726-155603_O_car_track.csv")) == "2026-07-30"
+    parsed = parse_datetime_from_ac_filename(Path("AC_300726-155603_O_car_track.csv"))
+
+    assert parsed == datetime(2026, 7, 30, 15, 56, 3).astimezone()
+    assert parsed is not None and parsed.tzinfo is not None

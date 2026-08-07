@@ -43,6 +43,8 @@ def json_load(path: Path) -> Any:
 def json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating,)):
@@ -52,15 +54,14 @@ def json_default(value: Any) -> Any:
     raise TypeError(f"Cannot serialize {type(value)!r}")
 
 
-def parse_date_from_ac_filename(path: Path) -> str | None:
-    match = re.search(r"(?:^|_)AC_(\d{6})-", path.name, re.IGNORECASE)
-    if not match:
-        match = re.search(r"^AC_(\d{6})-", path.name, re.IGNORECASE)
+def parse_datetime_from_ac_filename(path: Path) -> datetime | None:
+    match = re.search(r"(?:^|_)AC_(\d{6}-\d{6})_", path.name, re.IGNORECASE)
     if not match:
         return None
     token = match.group(1)
     try:
-        return datetime.strptime(token, "%d%m%y").date().isoformat()
+        # A naive datetime is interpreted as local time by astimezone().
+        return datetime.strptime(token, "%d%m%y-%H%M%S").astimezone()
     except ValueError:
         return None
 

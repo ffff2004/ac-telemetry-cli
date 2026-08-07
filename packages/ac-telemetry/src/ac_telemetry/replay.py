@@ -11,7 +11,7 @@ import pandas as pd
 from ac_replay_parser import ParsedCar, ParsedReplay, parse_replay_data
 
 from .config import ProcessingConfig
-from .util import parse_date_from_ac_filename, sha256_file, stable_id
+from .util import parse_datetime_from_ac_filename, sha256_file, stable_id
 
 
 WHEELS = {"fl": "wheelFL", "fr": "wheelFR", "rl": "wheelRL", "rr": "wheelRR"}
@@ -46,7 +46,7 @@ def inspect_replay(path: Path) -> dict[str, Any]:
         "path": str(path),
         "size_bytes": path.stat().st_size,
         "sha256": sha256_file(path),
-        "date_from_filename": parse_date_from_ac_filename(path),
+        "datetime_from_filename": parse_datetime_from_ac_filename(path),
         "metadata": _replay_header_metadata(replay),
         "driver_names": list(replay.driver_names),
         "car_count": len(replay.cars),
@@ -523,7 +523,7 @@ def load_replay(
             "source_name": path.name,
             "source_hash": source_hash,
             "source_format": "acreplay",
-            "date": parse_date_from_ac_filename(path),
+            "datetime": parse_datetime_from_ac_filename(path),
             "car_index": car_index,
             "car_id": car.header.car_id,
             "track_id": replay.header.track,

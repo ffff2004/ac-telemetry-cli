@@ -135,7 +135,7 @@ def command_merge(args: argparse.Namespace) -> int:
         merged = pd.concat(frames, ignore_index=True).drop_duplicates()
         refs.append(storage.write(logical, merged))
     manifest = {
-        "schema_version": "1.0.0",
+        "schema_version": "2",
         "tool_version": manifests[0].get("tool_version"),
         "dataset_id": "merged-" + "-".join(m["dataset_id"][:8] for m in manifests),
         "table_format": storage.format,

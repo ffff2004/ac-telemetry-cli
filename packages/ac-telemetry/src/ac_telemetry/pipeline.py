@@ -154,7 +154,7 @@ def preprocess_dataset(
 
     dataset_id = stable_id(*(item["sha256"] for item in source_files), __version__)
     manifest = {
-        "schema_version": "1.0.0",
+        "schema_version": "2",
         "tool_version": __version__,
         "dataset_id": dataset_id,
         "created_at": utc_now_iso(),
