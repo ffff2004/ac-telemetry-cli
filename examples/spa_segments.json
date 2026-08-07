@@ -1,0 +1,27 @@
+{
+  "track": "spa",
+  "coordinate": "actual_distance_m",
+  "description": "Example boundaries calibrated to the supplied F2004 replay exports. Recalibrate for other cars or progress sources.",
+  "segments": [
+    {"id": "la_source", "name": "La Source + exit", "start": 0, "end": 700},
+    {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 700, "end": 2250},
+    {"id": "les_combes", "name": "Les Combes / Malmedy", "start": 2250, "end": 2800},
+    {"id": "bruxelles", "name": "Bruxelles / No Name", "start": 2800, "end": 3500},
+    {"id": "pouhon", "name": "Pouhon", "start": 3500, "end": 4300},
+    {
+      "id": "fagnes",
+      "name": "Fagnes",
+      "start": 4300,
+      "end": 4750,
+      "subsegments": [
+        {"id": "fagnes_approach", "name": "Fagnes approach and braking", "start": 4300, "end": 4450},
+        {"id": "fagnes_right", "name": "Fagnes first right", "start": 4450, "end": 4560},
+        {"id": "fagnes_transition", "name": "Fagnes transition", "start": 4560, "end": 4630},
+        {"id": "fagnes_left_exit", "name": "Fagnes left and exit", "start": 4630, "end": 4750}
+      ]
+    },
+    {"id": "campus_stavelot", "name": "Campus / Stavelot", "start": 4750, "end": 5400},
+    {"id": "blanchimont", "name": "Blanchimont run", "start": 5400, "end": 6500},
+    {"id": "bus_stop", "name": "Bus Stop", "start": 6500, "end": 6940}
+  ]
+}
