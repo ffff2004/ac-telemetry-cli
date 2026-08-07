@@ -1,28 +1,5 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "ac-telemetry"
-version = "0.1.0"
-description = "Mechanical preprocessing CLI and library for Assetto Corsa replay telemetry CSV files"
-readme = "README.md"
-requires-python = ">=3.14"
-authors = [{name = "ffff2004"}, {name = "OpenAI"}]
-dependencies = [
-  "numpy>=1.26",
-  "pandas>=2.1",
+[tool.uv.workspace]
+members = [
+  "packages/ac-telemetry",
+  "packages/ac-replay-parser",
 ]
-
-[project.optional-dependencies]
-parquet = ["pyarrow>=15"]
-dev = ["pytest>=8"]
-
-[project.scripts]
-ac-telemetry = "ac_telemetry.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]

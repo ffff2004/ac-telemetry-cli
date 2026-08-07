@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ac-telemetry"
+version = "0.1.0"
+description = "Mechanical preprocessing for Assetto Corsa .acreplay telemetry"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "ffff2004"}, {name = "OpenAI"}]
+dependencies = [
+  "ac-replay-parser",
+  "numpy>=1.26",
+  "pandas>=2.1",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=15"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ac-telemetry = "ac_telemetry.cli:main"
+
+[tool.uv.sources]
+ac-replay-parser = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

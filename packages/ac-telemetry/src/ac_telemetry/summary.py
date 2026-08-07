@@ -99,7 +99,7 @@ def build_ai_context(
             "Replay CSV does not contain native normalized spline position",
             "Progress uses normalized cumulative path distance unless another source is added",
             "TC intervention is a proxy because torque cut is not recorded",
-            "Pit-lane and track-valid flags are unavailable in this replay export",
+            "Pit-lane and track-valid flags are unavailable in the parsed replay data",
         ],
         "data_quality": {
             "flag_count": int(len(quality_flags)),

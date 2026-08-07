@@ -13,11 +13,32 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "ac-replay-parser",
+    "ac-telemetry",
+]
+
+[[package]]
+name = "ac-replay-parser"
+version = "0.1.0"
+source = { editable = "packages/ac-replay-parser" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'dev'", specifier = ">=8" }]
+provides-extras = ["dev"]
+
 [[package]]
 name = "ac-telemetry"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "packages/ac-telemetry" }
 dependencies = [
+    { name = "ac-replay-parser" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://mirrors.cernet.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://mirrors.cernet.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.12'" },
     { name = "pandas" },
@@ -33,6 +54,7 @@ parquet = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ac-replay-parser", editable = "packages/ac-replay-parser" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.1" },
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=15" },

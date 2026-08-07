@@ -62,23 +62,25 @@ def preprocess_dataset(
             setup_metadata_by_id[setup_id] = setup_meta
             all_setups.append(setup_table)
 
-        result = load_replay(
+        results = load_replay(
             replay_path,
             config,
             setup_id=setup_id,
             session_label=spec.get("session_label"),
+            driver_name=spec.get("driver_name"),
         )
-        all_sessions.append(result.metadata)
-        all_samples.append(result.samples)
-        all_laps.append(result.laps)
-        if not result.quality_flags.empty:
-            all_quality.append(result.quality_flags)
+        for result in results:
+            all_sessions.append(result.metadata)
+            all_samples.append(result.samples)
+            all_laps.append(result.laps)
+            if not result.quality_flags.empty:
+                all_quality.append(result.quality_flags)
         source_files.append(
             {
                 "path": str(replay_path),
                 "name": replay_path.name,
-                "sha256": result.metadata["source_hash"],
-                "type": "ac_replay_csv",
+                "sha256": results[0].metadata["source_hash"],
+                "type": "ac_replay",
             }
         )
         if setup_path:
@@ -165,7 +167,7 @@ def preprocess_dataset(
         "tables": _table_manifest(refs),
         "warnings": [
             "Parquet unavailable; CSV fallback used" if storage.format == "csv" else None,
-            "Native AC normalized spline position is not present in replay CSV",
+            "Native AC normalized spline position is not present in parsed replay data",
         ],
     }
     manifest["warnings"] = [item for item in manifest["warnings"] if item]

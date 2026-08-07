@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,30 +8,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ac_replay_parser import ParsedCar, ParsedReplay, parse_replay_data
+
 from .config import ProcessingConfig
 from .util import parse_date_from_ac_filename, sha256_file, stable_id
 
-
-REQUIRED_COLUMNS = {
-    "frame",
-    "position.x",
-    "position.y",
-    "position.z",
-    "velocity.x",
-    "velocity.y",
-    "velocity.z",
-    "currentLap",
-    "currentLapTime",
-    "lastLapTime",
-    "bestLapTime",
-    "gas",
-    "brake",
-    "clutch",
-    "steerAngle",
-    "gear",
-    "rpm",
-    "fuel",
-}
 
 WHEELS = {"fl": "wheelFL", "fr": "wheelFR", "rl": "wheelRL", "rr": "wheelRR"}
 
@@ -45,41 +25,98 @@ class ReplayResult:
     quality_flags: pd.DataFrame
 
 
-def read_replay_metadata(path: Path) -> dict[str, Any]:
-    metadata: dict[str, Any] = {}
-    with path.open("r", encoding="utf-8-sig", errors="replace") as fh:
-        for line in fh:
-            if not line.startswith("#"):
-                break
-            text = line[1:].strip()
-            if not text:
-                continue
-            key, _, raw = text.partition(" ")
-            raw = raw.strip()
-            if re.fullmatch(r"[-+]?\d+", raw):
-                value: Any = int(raw)
-            elif re.fullmatch(r"[-+]?(?:\d+\.\d*|\.\d+)", raw):
-                value = float(raw)
-            else:
-                value = raw
-            metadata[key] = value
-    return metadata
+def _replay_header_metadata(replay: ParsedReplay) -> dict[str, Any]:
+    header = replay.header
+    return {
+        "replayVersion": header.version,
+        "recordingInterval": header.recording_interval,
+        "weather": header.weather,
+        "track": header.track,
+        "trackConfig": header.track_config,
+        "numCars": header.num_cars,
+        "currentRecordingIndex": header.current_recording_index,
+        "replayNumFrames": header.num_frames,
+        "numTrackObjects": header.num_track_objects,
+    }
 
 
 def inspect_replay(path: Path) -> dict[str, Any]:
-    metadata = read_replay_metadata(path)
-    header = pd.read_csv(path, comment="#", nrows=5)
-    missing = sorted(REQUIRED_COLUMNS - set(header.columns))
+    replay = parse_replay_data(path.read_bytes())
     return {
         "path": str(path),
         "size_bytes": path.stat().st_size,
         "sha256": sha256_file(path),
         "date_from_filename": parse_date_from_ac_filename(path),
-        "metadata": metadata,
-        "column_count": len(header.columns),
-        "columns": list(header.columns),
-        "missing_required_columns": missing,
+        "metadata": _replay_header_metadata(replay),
+        "driver_names": list(replay.driver_names),
+        "car_count": len(replay.cars),
+        "cars": [
+            {
+                "car_index": index,
+                "car_id": car.header.car_id,
+                "driver_name": car.header.driver_name,
+                "nation_code": car.header.nation_code,
+                "driver_team": car.header.driver_team,
+                "car_skin_id": car.header.car_skin_id,
+                "frame_count": len(car.frames),
+                "extra_version": car.extra_version,
+                "extra_frame_count": len(car.extra_frames),
+            }
+            for index, car in enumerate(replay.cars)
+        ],
+        "csp_data_offset": replay.csp_data_offset,
     }
+
+
+def _car_to_raw(car: ParsedCar) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for frame_index, frame in enumerate(car.frames):
+        row: dict[str, Any] = {
+            "frame": frame_index,
+            "position.x": frame.position.x,
+            "position.y": frame.position.y,
+            "position.z": frame.position.z,
+            "rotation.x": frame.rotation.x,
+            "rotation.y": frame.rotation.y,
+            "rotation.z": frame.rotation.z,
+            "velocity.x": frame.velocity.x,
+            "velocity.y": frame.velocity.y,
+            "velocity.z": frame.velocity.z,
+            "steerAngle": frame.steer_angle,
+            "bodyworkNoise": frame.bodywork_noise,
+            "drivetrainSpeed": frame.drivetrain_speed,
+            "currentLap": frame.current_lap,
+            "currentLapTime": frame.current_lap_time,
+            "lastLapTime": frame.last_lap_time,
+            "bestLapTime": frame.best_lap_time,
+            "fuel": frame.fuel,
+            "fuelPerLap": frame.fuel_per_lap,
+            "rpm": frame.rpm,
+            "gear": frame.gear,
+            "gas": frame.gas,
+            "brake": frame.brake,
+            "boost": frame.boost,
+        }
+        if frame_index < len(car.extra_frames):
+            row["clutch"] = car.extra_frames[frame_index].clutch
+        else:
+            row["clutch"] = np.nan
+
+        for short, wheel in zip(WHEELS, frame.wheels, strict=True):
+            prefix = WHEELS[short]
+            row.update(
+                {
+                    f"{prefix}.angularVelocity": wheel.angular_velocity,
+                    f"{prefix}.slipAngle": wheel.slip_angle,
+                    f"{prefix}.slipRatio": wheel.slip_ratio,
+                    f"{prefix}.load": wheel.load,
+                    f"{prefix}.position.x": wheel.position.x,
+                    f"{prefix}.position.y": wheel.position.y,
+                    f"{prefix}.position.z": wheel.position.z,
+                }
+            )
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -437,40 +474,72 @@ def load_replay(
     config: ProcessingConfig,
     setup_id: str | None = None,
     session_label: str | None = None,
-) -> ReplayResult:
-    metadata = read_replay_metadata(path)
+    driver_name: str | None = None,
+) -> list[ReplayResult]:
+    replay = parse_replay_data(path.read_bytes())
+    if not replay.cars:
+        raise ValueError(f"{path.name}: replay contains no cars")
     source_hash = sha256_file(path)
-    session_id = stable_id(path.name, source_hash)
-    raw = pd.read_csv(path, comment="#", low_memory=False)
-    missing = sorted(REQUIRED_COLUMNS - set(raw.columns))
-    if missing:
-        raise ValueError(f"{path.name}: missing required columns: {missing}")
+    metadata = _replay_header_metadata(replay)
+    results: list[ReplayResult] = []
+    selected_cars = [
+        (index, car)
+        for index, car in enumerate(replay.cars)
+        if driver_name is None or car.header.driver_name == driver_name
+    ]
+    if driver_name is not None and not selected_cars:
+        raise ValueError(f'Driver "{driver_name}" was not found in {path.name}')
 
-    raw["_lap_segment_index"] = _lap_segments(raw, config.time_reset_tolerance_ms)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
-        samples, flags = _derive_sample_channels(raw, metadata, session_id, config)
-    laps = _build_laps(samples, raw, session_id, config)
+    for car_index, car in selected_cars:
+        car_metadata = {
+            **metadata,
+            "carID": car.header.car_id,
+            "driverName": car.header.driver_name,
+            "nationCode": car.header.nation_code,
+            "driverTeam": car.header.driver_team,
+            "carSkinID": car.header.car_skin_id,
+        }
+        session_id = stable_id(
+            path.name,
+            source_hash,
+            car_index,
+            car.header.car_id,
+            car.header.driver_name,
+        )
+        raw = _car_to_raw(car)
+        raw["_lap_segment_index"] = _lap_segments(raw, config.time_reset_tolerance_ms)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
+            samples, flags = _derive_sample_channels(raw, car_metadata, session_id, config)
+        laps = _build_laps(samples, raw, session_id, config)
 
-    session_metadata = {
-        "session_id": session_id,
-        "session_label": session_label or path.stem,
-        "source_file": str(path),
-        "source_name": path.name,
-        "source_hash": source_hash,
-        "date": parse_date_from_ac_filename(path),
-        "car_id": metadata.get("carID"),
-        "track_id": metadata.get("track"),
-        "track_config": metadata.get("trackConfig"),
-        "driver_name": metadata.get("driverName"),
-        "weather": metadata.get("weather"),
-        "sample_interval_ms": metadata.get("recordingInterval"),
-        "frame_count": len(samples),
-        "lap_count_total": len(laps),
-        "lap_count_complete": int(laps["is_complete"].sum()),
-        "session_duration_s": float(samples["timestamp_s"].max()) if len(samples) else 0.0,
-        "setup_id": setup_id,
-        "replay_metadata": metadata,
-    }
-    quality = pd.DataFrame(flags)
-    return ReplayResult(session_metadata, samples, laps, quality)
+        label = session_label or path.stem
+        if len(replay.cars) > 1:
+            label = f"{label} ({car.header.driver_name or car.header.car_id})"
+        session_metadata = {
+            "session_id": session_id,
+            "session_label": label,
+            "source_file": str(path),
+            "source_name": path.name,
+            "source_hash": source_hash,
+            "source_format": "acreplay",
+            "date": parse_date_from_ac_filename(path),
+            "car_index": car_index,
+            "car_id": car.header.car_id,
+            "track_id": replay.header.track,
+            "track_config": replay.header.track_config,
+            "driver_name": car.header.driver_name,
+            "nation_code": car.header.nation_code,
+            "driver_team": car.header.driver_team,
+            "car_skin_id": car.header.car_skin_id,
+            "weather": replay.header.weather,
+            "sample_interval_ms": replay.header.recording_interval,
+            "frame_count": len(samples),
+            "lap_count_total": len(laps),
+            "lap_count_complete": int(laps["is_complete"].sum()),
+            "session_duration_s": float(samples["timestamp_s"].max()) if len(samples) else 0.0,
+            "setup_id": setup_id,
+            "replay_metadata": car_metadata,
+        }
+        results.append(ReplayResult(session_metadata, samples, laps, pd.DataFrame(flags)))
+    return results

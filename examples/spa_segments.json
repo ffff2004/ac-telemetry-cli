@@ -1,7 +1,7 @@
 {
   "track": "spa",
   "coordinate": "actual_distance_m",
-  "description": "Example boundaries calibrated to the supplied F2004 replay exports. Recalibrate for other cars or progress sources.",
+  "description": "Example boundaries calibrated to the supplied F2004 replay data. Recalibrate for other cars or progress sources.",
   "segments": [
     {"id": "la_source", "name": "La Source + exit", "start": 0, "end": 700},
     {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 700, "end": 2250},

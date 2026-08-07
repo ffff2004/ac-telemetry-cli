@@ -50,6 +50,7 @@ def _load_session_specs(args: argparse.Namespace) -> tuple[list[dict[str, Any]],
             "setup": args.setup,
             "setup_sp": args.setup_sp,
             "setup_label": args.setup_label,
+            "driver_name": args.driver_name,
         }
         for replay in args.replays
     ]
@@ -154,12 +155,12 @@ def command_merge(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ac-telemetry",
-        description="Mechanical preprocessing for Assetto Corsa replay telemetry CSV files.",
+        description="Mechanical preprocessing for Assetto Corsa .acreplay telemetry files.",
     )
     parser.add_argument("--version", action="version", version="ac-telemetry 0.1.0")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    inspect_cmd = sub.add_parser("inspect", help="Inspect replay metadata and channel availability")
+    inspect_cmd = sub.add_parser("inspect", help="Inspect .acreplay metadata and cars")
     inspect_cmd.add_argument("replays", nargs="+")
     inspect_cmd.set_defaults(func=command_inspect)
 
@@ -169,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess.add_argument("--setup")
     preprocess.add_argument("--setup-sp")
     preprocess.add_argument("--setup-label")
+    preprocess.add_argument("--driver-name", help="Process only the named driver's car")
     preprocess.add_argument("--segments")
     preprocess.add_argument("--output", required=True)
     preprocess.add_argument("--storage", choices=["auto", "parquet", "csv"], default="auto")

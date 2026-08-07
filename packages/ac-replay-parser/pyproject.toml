@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ac-replay-parser"
+version = "0.1.0"
+description = "Typed Assetto Corsa version 16 .acreplay parser"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "ffff2004"}, {name = "OpenAI"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ac-replay-parser = "ac_replay_parser.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
