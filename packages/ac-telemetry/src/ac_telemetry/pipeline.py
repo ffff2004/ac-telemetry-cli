@@ -52,7 +52,7 @@ def preprocess_dataset(
             setup_path, setup_sp_path, spec.get("setup_label")
         )
         setup_id = setup_meta["setup_id"] if setup_meta else None
-        if setup_meta and setup_id not in setup_metadata_by_id:
+        if setup_meta and setup_id is not None and setup_id not in setup_metadata_by_id:
             setup_metadata_by_id[setup_id] = setup_meta
             all_setups.append(setup_table)
 
