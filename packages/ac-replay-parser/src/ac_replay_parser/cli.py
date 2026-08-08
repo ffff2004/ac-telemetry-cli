@@ -59,13 +59,13 @@ def format_float(value: float, precision: int) -> str:
 def output_car_frame(frame: CarFrame) -> str:
 	values: list[str] = []
 
-	def add_f32(items: Iterable[object]) -> None:
+	def add_f32(items: Iterable[float]) -> None:
 		values.extend(format_float(float(item), 9) for item in items)
 
-	def add_f16(items: Iterable[object]) -> None:
+	def add_f16(items: Iterable[float]) -> None:
 		values.extend(format_float(float(item), 5) for item in items)
 
-	def add_int(items: Iterable[object]) -> None:
+	def add_int(items: Iterable[int]) -> None:
 		values.extend(str(int(item)) for item in items)
 
 	add_f32((frame.position.x, frame.position.y, frame.position.z))

@@ -9,7 +9,7 @@ import struct
 import zlib
 from dataclasses import dataclass
 from io import BytesIO
-from typing import BinaryIO
+from typing import BinaryIO, Iterable, Literal, overload
 
 
 REPLAY_VERSION = 16
@@ -304,18 +304,51 @@ def format_float(value: float, precision: int) -> str:
 	return format(value, f".{precision}g")
 
 
-def unpack_values(data: bytes, offset: int, fmt: str) -> tuple[object, ...]:
+@overload
+def unpack_values(data: bytes, offset: int, fmt: Literal["e"]) -> tuple[float]: ...
+
+
+@overload
+def unpack_values(data: bytes, offset: int, fmt: Literal["H"]) -> tuple[int]: ...
+
+
+@overload
+def unpack_values(data: bytes, offset: int, fmt: Literal["eee"]) -> tuple[float, float, float]: ...
+
+
+@overload
+def unpack_values(data: bytes, offset: int, fmt: Literal["fff"]) -> tuple[float, float, float]: ...
+
+
+@overload
+def unpack_values(
+	data: bytes, offset: int, fmt: Literal["eeee"]
+) -> tuple[float, float, float, float]: ...
+
+
+@overload
+def unpack_values(data: bytes, offset: int, fmt: Literal["BBBB"]) -> tuple[int, int, int, int]: ...
+
+
+@overload
+def unpack_values(data: bytes, offset: int, fmt: Literal["III"]) -> tuple[int, int, int]: ...
+
+
+def unpack_values(data: bytes, offset: int, fmt: str):
 	return struct.unpack_from("<" + fmt, data, offset)
 
 
 def yxz_as_xyz(data: bytes, offset: int) -> tuple[float, float, float]:
 	y, x, z = unpack_values(data, offset, "eee")
-	return float(x), float(y), float(z)
+	return x, y, z
 
 
-def vector3(data: bytes, offset: int, fmt: str) -> Vector3:
-	x, y, z = unpack_values(data, offset, fmt * 3)
-	return Vector3(float(x), float(y), float(z))
+def vector3(data: bytes, offset: int, fmt: Literal["e", "f"]) -> Vector3:
+	if fmt == "e":
+		x, y, z = unpack_values(data, offset, "eee")
+	else:
+		x, y, z = unpack_values(data, offset, "fff")
+	return Vector3(x, y, z)
 
 
 def yxz_vector3(data: bytes, offset: int) -> Vector3:
