@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .abs_activity import detect_abs_activity
 from .config import ProcessingConfig
 from .util import close_short_false_gaps, contiguous_true_runs, stable_id
 
@@ -216,8 +217,10 @@ def _detect_wheel_event(
 
 
 def detect_all_events(samples: pd.DataFrame, config: ProcessingConfig) -> dict[str, pd.DataFrame]:
+    braking = detect_braking(samples, config)
     return {
-        "events/braking": detect_braking(samples, config),
+        "events/braking": braking,
+        "events/abs_activity": detect_abs_activity(samples, braking, config),
         "events/throttle": detect_throttle(samples, config),
         "events/shifts": detect_shifts(samples),
         "events/lockups": _detect_wheel_event(

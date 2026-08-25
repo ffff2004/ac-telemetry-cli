@@ -75,6 +75,7 @@ output/
 ├── samples.*
 ├── events/
 │   ├── braking.*
+│   ├── abs_activity.*
 │   ├── throttle.*
 │   ├── shifts.*
 │   ├── lockups.*
@@ -97,6 +98,7 @@ output/
 
 - The parsed replay data does not contain AC's native normalized spline position. `progress` is therefore normalized cumulative horizontal path distance per lap and is marked `cumulative_distance_proxy`.
 - Pit-lane, track-valid, tyre-temperature, direct TC torque-cut, aero-load, and differential-lock channels are not present in the parsed replay data.
+- `events/abs_activity` contains per-wheel spectral ABS intervention candidates, not a native AC ABS-pressure or valve-state channel. Observed frequencies may be aliased by the replay sample rate.
 - `tc_activity_proxy` and `rear_tire_stress_proxy` are explicitly proxies, not hidden AC channels.
 - The example Spa distance boundaries are calibrated to the supplied F2004 data and should not be treated as universal track coordinates.
 

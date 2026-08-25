@@ -27,6 +27,20 @@ class ProcessingConfig:
     minimum_throttle_event_s: float = 0.10
     wheel_event_gap_close_s: float = 0.045
     minimum_wheel_event_s: float = 0.030
+    abs_analysis_window_s: float = 0.75
+    abs_analysis_hop_s: float = 0.075
+    abs_low_frequency_min_hz: float = 3.0
+    abs_low_frequency_max_hz: float = 8.0
+    abs_high_frequency_min_hz: float = 15.0
+    abs_high_frequency_max_hz: float = 32.0
+    abs_nyquist_fraction: float = 0.48
+    abs_min_high_to_low_power_ratio: float = 0.50
+    abs_min_high_band_power_fraction: float = 0.30
+    abs_max_brake_high_band_power_fraction: float = 0.25
+    abs_noise_floor_percentile: float = 90.0
+    abs_min_high_band_noise_excess_ratio: float = 1.5
+    abs_event_gap_close_s: float = 0.15
+    minimum_abs_event_s: float = 0.30
     time_reset_tolerance_ms: float = 5.0
     duplicate_distance_tolerance_m: float = 1e-6
 
