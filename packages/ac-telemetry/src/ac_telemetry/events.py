@@ -7,6 +7,7 @@ import pandas as pd
 
 from .abs_activity import detect_abs_activity
 from .config import ProcessingConfig
+from .tc_activity import detect_tc_activity
 from .util import close_short_false_gaps, contiguous_true_runs, stable_id
 
 
@@ -123,13 +124,6 @@ def detect_throttle(samples: pd.DataFrame, config: ProcessingConfig) -> pd.DataF
                     "throttle_lift_within_event": bool(
                         (segment["throttle"].diff() < -0.20).any()
                     ),
-                    "tc_activity_proxy": float(
-                        (
-                            segment["throttle"]
-                            * segment["rear_slip_ratio_max"].clip(lower=0)
-                            * segment["dt_s"]
-                        ).sum()
-                    ),
                 }
             )
             rows.append(row)
@@ -218,10 +212,12 @@ def _detect_wheel_event(
 
 def detect_all_events(samples: pd.DataFrame, config: ProcessingConfig) -> dict[str, pd.DataFrame]:
     braking = detect_braking(samples, config)
+    throttle = detect_throttle(samples, config)
     return {
         "events/braking": braking,
         "events/abs_activity": detect_abs_activity(samples, braking, config),
-        "events/throttle": detect_throttle(samples, config),
+        "events/throttle": throttle,
+        "events/tc_activity": detect_tc_activity(samples, throttle, config),
         "events/shifts": detect_shifts(samples),
         "events/lockups": _detect_wheel_event(
             samples, "front_lockup_candidate", "is_front_lock_candidate", ("fl", "fr"), "min", config

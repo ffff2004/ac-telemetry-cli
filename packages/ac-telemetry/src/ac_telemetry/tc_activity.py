@@ -7,50 +7,38 @@ import numpy as np
 import pandas as pd
 
 from ._spectral_activity import (
-    band_power as _band_power,
-    band_signal as _band_signal,
-    detrend as _detrend,
-    high_band_rms as _high_band_rms,
-    safe_correlation as _safe_correlation,
-    spectrum as _spectrum,
-    window_starts as _window_starts,
+    band_power,
+    band_signal,
+    detrend,
+    high_band_rms,
+    safe_correlation,
+    spectrum,
+    window_starts,
 )
 from .config import ProcessingConfig
 from .util import close_short_false_gaps, contiguous_true_runs, stable_id
 
 
-# Detector design evidence from the controlled brake test in
-# AC_250826-200255_O_ks_mercedes_amg_gt3_ks_silverstone1967_.acreplay.
-# The first braking event of each lap was analysed after trimming 0.25 s from
-# both ends and removing its quadratic trend.  Replay sampling was 66.67 Hz.
+# AC replay data has no native TC torque-cut channel.  The detector therefore
+# looks for the same observable mechanism as the ABS detector: high-frequency
+# slip-ratio suppression that is absent from the driver's pedal input.  Unlike
+# the controlled ABS experiment documented in abs_activity.py, no labelled TC
+# experiment has yet calibrated a universal frequency.  The default 15-32 Hz
+# band is deliberately provisional, configurable, and guarded by a per-session
+# non-throttle noise floor.  No positive-slip target or trigger threshold is
+# imposed: sustained wheelspin alone is not evidence of feedback intervention.
 #
-#   Laps  ABS / driver input       Recorded front-wheel response
-#   1-3   off, threshold braking   peak brake 0.812-0.871; spectrum centred at
-#                                  5.4 Hz; 15-32 Hz power 0.8%; mean slip -0.057
-#   4-6   ABS 1, hard braking      peak brake 1.000; spectrum centred at 22.4 Hz;
-#                                  15-32 Hz power 84.3%; mean slip -0.051
-#   7-9   ABS 6, hard braking      peak brake 1.000; spectrum centred at 16.5 Hz;
-#                                  15-32 Hz power 56.1%; mean slip -0.088
-#   10    ABS 12, active           peak brake 1.000; spectrum centred at 16.3 Hz;
-#                                  15-32 Hz power 51.6%; mean slip -0.126
-#   11    ABS 12, barely active    peak brake 0.737; spectrum centred at 5.1 Hz;
-#                                  15-32 Hz power 1.4%; mean slip -0.057
-#   12    off, sustained lock      peak brake 1.000; spectrum centred at 3.7 Hz;
-#                                  15-32 Hz power 1.4%; mean slip -0.920
-#
-# ABS-active front-wheel high-frequency signals were nearly independent across
-# the axle, while the brake-input channel remained low-frequency.  This supports
-# per-wheel feedback modulation downstream of the driver's pedal.  The observed
-# 15-32 Hz band is close to the 33.3 Hz Nyquist limit and may contain aliases.
-# These measurements justify the spectral evidence used below; they are not
-# universal slip targets, ABS frequencies, or manually imposed slip thresholds.
-WHEELS = ("fl", "fr", "rl", "rr")
-OPPOSITE_WHEEL = {"fl": "fr", "fr": "fl", "rl": "rr", "rr": "rl"}
-DETECTION_METHOD = "slip_ratio_spectral_activity_v1"
+# Only the rear wheels are considered because the pipeline's existing wheelspin
+# model is rear-drive-specific and replay metadata does not expose driven axles.
+# Front- or all-wheel-drive support requires drivetrain metadata or an explicit
+# driven-wheel configuration, rather than guessing from transient slip.
+DRIVEN_WHEELS = ("rl", "rr")
+OPPOSITE_WHEEL = {"rl": "rr", "rr": "rl"}
+DETECTION_METHOD = "driven_wheel_slip_spectral_activity_v1"
 
 EVENT_COLUMNS = [
     "event_id",
-    "parent_braking_event_id",
+    "parent_throttle_event_id",
     "session_id",
     "lap_id",
     "event_type",
@@ -68,18 +56,19 @@ EVENT_COLUMNS = [
     "end_progress",
     "entry_speed_kmh",
     "exit_speed_kmh",
+    "mean_throttle",
+    "peak_throttle",
     "mean_brake",
-    "peak_brake",
     "mean_wheel_load",
     "mean_slip_ratio",
-    "minimum_slip_ratio",
+    "maximum_slip_ratio",
     "detrended_slip_rms",
     "observed_peak_frequency_hz",
     "spectral_centroid_hz",
     "high_band_power_fraction",
     "high_to_low_power_ratio",
     "high_band_noise_excess_ratio",
-    "brake_high_band_power_fraction",
+    "throttle_high_band_power_fraction",
     "same_axle_high_band_correlation",
     "activity_score",
     "confidence",
@@ -97,7 +86,7 @@ class _WindowEvidence:
     high_band_power_fraction: float
     high_to_low_power_ratio: float
     high_band_noise_excess_ratio: float
-    brake_high_band_power_fraction: float
+    throttle_high_band_power_fraction: float
     same_axle_high_band_correlation: float
     activity_score: float
 
@@ -106,7 +95,7 @@ def _noise_floors(
     samples: pd.DataFrame,
     config: ProcessingConfig,
 ) -> dict[tuple[str, str], float]:
-    """Estimate each wheel's high-frequency floor from non-braking rolling data."""
+    """Estimate each rear wheel's high-frequency floor while power is not applied."""
     floors: dict[tuple[str, str], float] = {}
     for session_id, original in samples.groupby("session_id", sort=False):
         g = original.sort_values("sample_index").reset_index(drop=True)
@@ -115,18 +104,19 @@ def _noise_floors(
             continue
         sample_rate_hz = 1.0 / median_dt
         high_max_hz = min(
-            config.abs_high_frequency_max_hz,
-            config.abs_nyquist_fraction * sample_rate_hz,
+            config.tc_high_frequency_max_hz,
+            config.tc_nyquist_fraction * sample_rate_hz,
         )
-        if high_max_hz <= config.abs_high_frequency_min_hz:
+        if high_max_hz <= config.tc_high_frequency_min_hz:
             continue
-        window_samples = max(16, round(config.abs_analysis_window_s / median_dt))
-        rolling_mask = (
-            (g["brake_n"] < config.brake_active_threshold)
-            & (g["speed_kmh"] >= config.minimum_brake_entry_speed_kmh)
+        window_samples = max(16, round(config.tc_analysis_window_s / median_dt))
+        baseline_mask = (
+            (g["throttle"] < config.throttle_event_threshold)
+            & (g["brake_n"] < config.brake_active_threshold)
+            & (g["speed_kmh"] >= config.wheelspin_minimum_speed_kmh)
         ).to_numpy(dtype=bool)
-        runs = contiguous_true_runs(rolling_mask)
-        for wheel in WHEELS:
+        runs = contiguous_true_runs(baseline_mask)
+        for wheel in DRIVEN_WHEELS:
             column = f"wheel_{wheel}_slip_ratio"
             if column not in g:
                 continue
@@ -134,18 +124,17 @@ def _noise_floors(
             for start, end in runs:
                 for offset in range(start, end - window_samples + 2, window_samples):
                     values = g[column].iloc[offset : offset + window_samples].to_numpy(dtype=float)
-                    if len(values) != window_samples:
-                        continue
-                    rms_values.append(
-                        _high_band_rms(
-                            values,
-                            sample_rate_hz,
-                            config.abs_high_frequency_min_hz,
-                            high_max_hz,
+                    if len(values) == window_samples:
+                        rms_values.append(
+                            high_band_rms(
+                                values,
+                                sample_rate_hz,
+                                config.tc_high_frequency_min_hz,
+                                high_max_hz,
+                            )
                         )
-                    )
             floors[(str(session_id), wheel)] = (
-                float(np.percentile(rms_values, config.abs_noise_floor_percentile))
+                float(np.percentile(rms_values, config.tc_noise_floor_percentile))
                 if rms_values
                 else float("nan")
             )
@@ -162,42 +151,48 @@ def _window_evidence(
     noise_floor: float,
     config: ProcessingConfig,
 ) -> _WindowEvidence:
-    wheel_values = segment[f"wheel_{wheel}_slip_ratio"].iloc[start : end + 1].to_numpy(dtype=float)
+    wheel_values = segment[f"wheel_{wheel}_slip_ratio"].iloc[start : end + 1].to_numpy(float)
     opposite_values = segment[
         f"wheel_{OPPOSITE_WHEEL[wheel]}_slip_ratio"
-    ].iloc[start : end + 1].to_numpy(dtype=float)
-    brake_values = segment["brake_n"].iloc[start : end + 1].to_numpy(dtype=float)
+    ].iloc[start : end + 1].to_numpy(float)
+    throttle_values = segment["throttle"].iloc[start : end + 1].to_numpy(float)
+    brake_values = segment["brake_n"].iloc[start : end + 1].to_numpy(float)
+    gear_values = (
+        segment["gear_physical"].iloc[start : end + 1].dropna().to_numpy(int)
+        if "gear_physical" in segment
+        else np.ones(1, dtype=int)
+    )
 
-    frequencies, wheel_power = _spectrum(wheel_values, sample_rate_hz)
-    _, brake_power = _spectrum(brake_values, sample_rate_hz)
-    low_power = _band_power(
+    frequencies, wheel_power = spectrum(wheel_values, sample_rate_hz)
+    _, throttle_power = spectrum(throttle_values, sample_rate_hz)
+    low_power = band_power(
         frequencies,
         wheel_power,
-        config.abs_low_frequency_min_hz,
-        config.abs_low_frequency_max_hz,
+        config.tc_low_frequency_min_hz,
+        config.tc_low_frequency_max_hz,
     )
-    high_power = _band_power(
+    high_power = band_power(
         frequencies,
         wheel_power,
-        config.abs_high_frequency_min_hz,
+        config.tc_high_frequency_min_hz,
         high_max_hz,
     )
-    analysis_power = _band_power(frequencies, wheel_power, 2.0, high_max_hz)
-    brake_high_power = _band_power(
+    analysis_power = band_power(frequencies, wheel_power, 2.0, high_max_hz)
+    throttle_high_power = band_power(
         frequencies,
-        brake_power,
-        config.abs_high_frequency_min_hz,
+        throttle_power,
+        config.tc_high_frequency_min_hz,
         high_max_hz,
     )
-    brake_analysis_power = _band_power(frequencies, brake_power, 2.0, high_max_hz)
+    throttle_analysis_power = band_power(frequencies, throttle_power, 2.0, high_max_hz)
     epsilon = np.finfo(float).eps
     high_to_low = high_power / max(low_power, epsilon)
     high_fraction = high_power / max(analysis_power, epsilon)
-    brake_high_fraction = brake_high_power / max(brake_analysis_power, epsilon)
-    high_rms = _high_band_rms(
+    throttle_high_fraction = throttle_high_power / max(throttle_analysis_power, epsilon)
+    high_rms = high_band_rms(
         wheel_values,
         sample_rate_hz,
-        config.abs_high_frequency_min_hz,
+        config.tc_high_frequency_min_hz,
         high_max_hz,
     )
     noise_excess = (
@@ -205,8 +200,7 @@ def _window_evidence(
     )
 
     high_mask = (
-        (frequencies >= config.abs_high_frequency_min_hz)
-        & (frequencies < high_max_hz)
+        (frequencies >= config.tc_high_frequency_min_hz) & (frequencies < high_max_hz)
     )
     if high_mask.any() and high_power > epsilon:
         high_indices = np.flatnonzero(high_mask)
@@ -219,17 +213,18 @@ def _window_evidence(
         peak_frequency = float("nan")
         centroid = float("nan")
 
-    wheel_high = _band_signal(
-        wheel_values, sample_rate_hz, config.abs_high_frequency_min_hz, high_max_hz
+    wheel_high = band_signal(
+        wheel_values, sample_rate_hz, config.tc_high_frequency_min_hz, high_max_hz
     )
-    opposite_high = _band_signal(
-        opposite_values, sample_rate_hz, config.abs_high_frequency_min_hz, high_max_hz
+    opposite_high = band_signal(
+        opposite_values, sample_rate_hz, config.tc_high_frequency_min_hz, high_max_hz
     )
-    same_axle_correlation = _safe_correlation(wheel_high, opposite_high)
+    same_axle_correlation = safe_correlation(wheel_high, opposite_high)
 
     ratio_score = float(
         np.clip(
-            np.log10(max(high_to_low, epsilon) / config.abs_min_high_to_low_power_ratio) + 1.0,
+            np.log10(max(high_to_low, epsilon) / config.tc_min_high_to_low_power_ratio)
+            + 1.0,
             0.0,
             2.0,
         )
@@ -237,26 +232,25 @@ def _window_evidence(
     )
     fraction_score = float(
         np.clip(
-            (high_fraction - config.abs_min_high_band_power_fraction)
-            / max(1.0 - config.abs_min_high_band_power_fraction, epsilon),
+            (high_fraction - config.tc_min_high_band_power_fraction)
+            / max(1.0 - config.tc_min_high_band_power_fraction, epsilon),
             0.0,
             1.0,
         )
     )
     pedal_score = float(
         np.clip(
-            1.0 - brake_high_fraction / config.abs_max_brake_high_band_power_fraction,
+            1.0 - throttle_high_fraction / config.tc_max_throttle_high_band_power_fraction,
             0.0,
             1.0,
         )
     )
-    independence_score = float(np.clip(1.0 - abs(same_axle_correlation), 0.0, 1.0))
     noise_score = (
         float(
             np.clip(
                 np.log10(
                     max(noise_excess, epsilon)
-                    / config.abs_min_high_band_noise_excess_ratio
+                    / config.tc_min_high_band_noise_excess_ratio
                 )
                 + 1.0,
                 0.0,
@@ -268,19 +262,38 @@ def _window_evidence(
         else 1.0
     )
     activity_score = (
-        0.35 * ratio_score
-        + 0.25 * fraction_score
+        0.40 * ratio_score
+        + 0.30 * fraction_score
         + 0.20 * pedal_score
-        + 0.10 * independence_score
         + 0.10 * noise_score
     )
+    braking = float(np.mean(brake_values)) >= config.brake_active_threshold
+    # A paddle shift creates a short, highly correlated driven-wheel transient
+    # while the pedal can remain flat.  That is commanded shift torque-cut, not
+    # feedback TC, so every analysis window must remain in one physical gear.
+    stable_forward_gear = (
+        len(gear_values) > 0
+        and np.all(gear_values == gear_values[0])
+        and gear_values[0] > 0
+    )
+    away_from_shift = True
+    if "gear_physical" in segment:
+        all_gears = segment["gear_physical"].fillna(0).to_numpy(int)
+        shift_indices = np.flatnonzero(all_gears[1:] != all_gears[:-1]) + 1
+        shift_margin = round(config.tc_shift_exclusion_s * sample_rate_hz)
+        away_from_shift = not np.any(
+            (shift_indices >= start - shift_margin) & (shift_indices <= end + shift_margin)
+        )
     candidate = bool(
-        high_to_low >= config.abs_min_high_to_low_power_ratio
-        and high_fraction >= config.abs_min_high_band_power_fraction
-        and brake_high_fraction <= config.abs_max_brake_high_band_power_fraction
+        not braking
+        and stable_forward_gear
+        and away_from_shift
+        and high_to_low >= config.tc_min_high_to_low_power_ratio
+        and high_fraction >= config.tc_min_high_band_power_fraction
+        and throttle_high_fraction <= config.tc_max_throttle_high_band_power_fraction
         and (
             not np.isfinite(noise_excess)
-            or noise_excess >= config.abs_min_high_band_noise_excess_ratio
+            or noise_excess >= config.tc_min_high_band_noise_excess_ratio
         )
     )
     return _WindowEvidence(
@@ -292,7 +305,7 @@ def _window_evidence(
         high_band_power_fraction=high_fraction,
         high_to_low_power_ratio=high_to_low,
         high_band_noise_excess_ratio=noise_excess,
-        brake_high_band_power_fraction=brake_high_fraction,
+        throttle_high_band_power_fraction=throttle_high_fraction,
         same_axle_high_band_correlation=same_axle_correlation,
         activity_score=activity_score,
     )
@@ -305,19 +318,19 @@ def _quality_flags(
     event_samples: int,
 ) -> str:
     flags: list[str] = []
-    nyquist_hz = sample_rate_hz / 2.0
-    finite_peaks = [item.peak_frequency_hz for item in evidence if np.isfinite(item.peak_frequency_hz)]
-    if finite_peaks and float(np.median(finite_peaks)) >= 0.80 * nyquist_hz:
+    peaks = [item.peak_frequency_hz for item in evidence if np.isfinite(item.peak_frequency_hz)]
+    if peaks and float(np.median(peaks)) >= 0.80 * sample_rate_hz / 2.0:
         flags.append("near_nyquist_alias_risk")
     if event_samples <= window_samples:
         flags.append("single_analysis_window")
     if not any(np.isfinite(item.high_band_noise_excess_ratio) for item in evidence):
-        flags.append("no_non_braking_noise_baseline")
+        flags.append("no_non_throttle_noise_baseline")
+    flags.append("rear_drive_assumption")
     return ";".join(flags)
 
 
 def _event_row(
-    parent_braking_event_id: str,
+    parent_throttle_event_id: str,
     segment: pd.DataFrame,
     wheel: str,
     start: int,
@@ -327,8 +340,7 @@ def _event_row(
     window_samples: int,
 ) -> dict[str, Any]:
     event_segment = segment.iloc[start : end + 1]
-    slip = event_segment[f"wheel_{wheel}_slip_ratio"].to_numpy(dtype=float)
-    loads = event_segment[f"wheel_{wheel}_load"]
+    slip = event_segment[f"wheel_{wheel}_slip_ratio"].to_numpy(float)
     first = event_segment.iloc[0]
     last = event_segment.iloc[-1]
     mean_score = float(np.mean([item.activity_score for item in evidence]))
@@ -337,14 +349,13 @@ def _event_row(
         for item in evidence
         if np.isfinite(item.peak_frequency_hz)
     ) else 1.0
-    confidence = float(np.clip(mean_score * alias_penalty, 0.0, 1.0))
-    parent_id = str(parent_braking_event_id)
+    parent_id = str(parent_throttle_event_id)
     return {
         "event_id": stable_id(parent_id, wheel, int(first["sample_index"])),
-        "parent_braking_event_id": parent_id,
+        "parent_throttle_event_id": parent_id,
         "session_id": first["session_id"],
         "lap_id": first["lap_id"],
-        "event_type": "abs_intervention_candidate",
+        "event_type": "tc_intervention_candidate",
         "detection_method": DETECTION_METHOD,
         "wheel": wheel,
         "start_sample": int(first["sample_index"]),
@@ -359,12 +370,13 @@ def _event_row(
         "end_progress": float(last["progress"]),
         "entry_speed_kmh": float(first["speed_kmh"]),
         "exit_speed_kmh": float(last["speed_kmh"]),
+        "mean_throttle": float(event_segment["throttle"].mean()),
+        "peak_throttle": float(event_segment["throttle"].max()),
         "mean_brake": float(event_segment["brake_n"].mean()),
-        "peak_brake": float(event_segment["brake_n"].max()),
-        "mean_wheel_load": float(loads.mean()),
+        "mean_wheel_load": float(event_segment[f"wheel_{wheel}_load"].mean()),
         "mean_slip_ratio": float(np.mean(slip)),
-        "minimum_slip_ratio": float(np.min(slip)),
-        "detrended_slip_rms": float(np.sqrt(np.mean(_detrend(slip) ** 2))),
+        "maximum_slip_ratio": float(np.max(slip)),
+        "detrended_slip_rms": float(np.sqrt(np.mean(detrend(slip) ** 2))),
         "observed_peak_frequency_hz": float(
             np.nanmedian([item.peak_frequency_hz for item in evidence])
         ),
@@ -382,46 +394,48 @@ def _event_row(
         )
         if any(np.isfinite(item.high_band_noise_excess_ratio) for item in evidence)
         else float("nan"),
-        "brake_high_band_power_fraction": float(
-            np.mean([item.brake_high_band_power_fraction for item in evidence])
+        "throttle_high_band_power_fraction": float(
+            np.mean([item.throttle_high_band_power_fraction for item in evidence])
         ),
         "same_axle_high_band_correlation": float(
             np.mean([item.same_axle_high_band_correlation for item in evidence])
         ),
         "activity_score": mean_score,
-        "confidence": confidence,
+        "confidence": float(np.clip(mean_score * alias_penalty, 0.0, 1.0)),
         "quality_flags": _quality_flags(
             evidence, sample_rate_hz, window_samples, len(event_segment)
         ),
     }
 
 
-def detect_abs_activity(
+def detect_tc_activity(
     samples: pd.DataFrame,
-    braking_events: pd.DataFrame,
+    throttle_events: pd.DataFrame,
     config: ProcessingConfig,
 ) -> pd.DataFrame:
-    """Detect per-wheel spectral ABS activity inside previously detected braking events."""
-    if samples.empty or braking_events.empty:
+    """Detect per-driven-wheel spectral TC activity inside throttle events."""
+    if samples.empty or throttle_events.empty:
         return pd.DataFrame(columns=EVENT_COLUMNS)
 
     rows: list[dict[str, Any]] = []
     noise_floors = _noise_floors(samples, config)
     sample_groups = {
-        (str(session_id), str(lap_id)): group.sort_values("sample_index").reset_index(drop=True)
+        (str(session_id), str(lap_id)): group.sort_values("sample_index").reset_index(
+            drop=True
+        )
         for (session_id, lap_id), group in samples.groupby(
             ["session_id", "lap_id"], sort=False
         )
     }
-    for braking_event in braking_events.itertuples(index=False):
+    for throttle_event in throttle_events.itertuples(index=False):
         lap_samples = sample_groups.get(
-            (str(braking_event.session_id), str(braking_event.lap_id))
+            (str(throttle_event.session_id), str(throttle_event.lap_id))
         )
         if lap_samples is None:
             continue
         segment = lap_samples[
-            (lap_samples["sample_index"] >= int(braking_event.start_sample))
-            & (lap_samples["sample_index"] <= int(braking_event.end_sample))
+            (lap_samples["sample_index"] >= int(throttle_event.start_sample))
+            & (lap_samples["sample_index"] <= int(throttle_event.end_sample))
         ].reset_index(drop=True)
         if segment.empty:
             continue
@@ -430,18 +444,15 @@ def detect_abs_activity(
             continue
         sample_rate_hz = 1.0 / median_dt
         high_max_hz = min(
-            config.abs_high_frequency_max_hz,
-            config.abs_nyquist_fraction * sample_rate_hz,
+            config.tc_high_frequency_max_hz,
+            config.tc_nyquist_fraction * sample_rate_hz,
         )
-        if high_max_hz <= config.abs_high_frequency_min_hz:
+        if high_max_hz <= config.tc_high_frequency_min_hz:
             continue
-        window_samples = max(16, round(config.abs_analysis_window_s / median_dt))
-        hop_samples = max(1, round(config.abs_analysis_hop_s / median_dt))
-        starts = _window_starts(len(segment), window_samples, hop_samples)
-        if not starts:
-            continue
-
-        for wheel in WHEELS:
+        window_samples = max(16, round(config.tc_analysis_window_s / median_dt))
+        hop_samples = max(1, round(config.tc_analysis_hop_s / median_dt))
+        starts = window_starts(len(segment), window_samples, hop_samples)
+        for wheel in DRIVEN_WHEELS:
             required = [
                 f"wheel_{wheel}_slip_ratio",
                 f"wheel_{OPPOSITE_WHEEL[wheel]}_slip_ratio",
@@ -457,7 +468,9 @@ def detect_abs_activity(
                     start + window_samples - 1,
                     sample_rate_hz,
                     high_max_hz,
-                    noise_floors.get((str(braking_event.session_id), wheel), float("nan")),
+                    noise_floors.get(
+                        (str(throttle_event.session_id), wheel), float("nan")
+                    ),
                     config,
                 )
                 for start in starts
@@ -465,28 +478,30 @@ def detect_abs_activity(
             mask = np.asarray([item.candidate for item in windows], dtype=bool)
             gap_windows = max(
                 0,
-                round(config.abs_event_gap_close_s / max(config.abs_analysis_hop_s, median_dt)),
+                round(config.tc_event_gap_close_s / max(config.tc_analysis_hop_s, median_dt)),
             )
             mask = close_short_false_gaps(mask, gap_windows)
             for first_window, last_window in contiguous_true_runs(mask):
-                selected = windows[first_window : last_window + 1]
-                selected = [item for item in selected if item.candidate]
+                selected = [
+                    item for item in windows[first_window : last_window + 1] if item.candidate
+                ]
                 if not selected:
                     continue
                 start = windows[first_window].start
                 end = windows[last_window].end
                 duration_s = float(segment.iloc[start : end + 1]["dt_s"].sum())
-                if duration_s < config.minimum_abs_event_s:
+                if duration_s < config.minimum_tc_event_s:
                     continue
-                event = _event_row(
-                    str(braking_event.event_id),
-                    segment,
-                    wheel,
-                    start,
-                    end,
-                    selected,
-                    sample_rate_hz,
-                    window_samples,
+                rows.append(
+                    _event_row(
+                        str(throttle_event.event_id),
+                        segment,
+                        wheel,
+                        start,
+                        end,
+                        selected,
+                        sample_rate_hz,
+                        window_samples,
+                    )
                 )
-                rows.append(event)
     return pd.DataFrame(rows, columns=EVENT_COLUMNS)

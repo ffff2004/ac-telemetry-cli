@@ -19,6 +19,33 @@ from .util import json_dump, sha256_file, stable_id, utc_now_iso
 from .validation import validate_dataset
 
 
+def _activity_metrics_by_lap(
+    events: pd.DataFrame,
+    samples: pd.DataFrame,
+) -> tuple[dict[str, float], dict[str, float]]:
+    active_time_by_lap: dict[str, float] = {}
+    max_score_by_lap: dict[str, float] = {}
+    if events.empty:
+        return active_time_by_lap, max_score_by_lap
+    for lap_id, group in events.groupby("lap_id", sort=False):
+        sample_ranges = sorted(
+            (int(row.start_sample), int(row.end_sample))
+            for row in group.itertuples(index=False)
+        )
+        merged: list[tuple[int, int]] = []
+        for start, end in sample_ranges:
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        lap_samples = samples[samples["lap_id"] == lap_id].set_index("sample_index")
+        active_time_by_lap[str(lap_id)] = sum(
+            float(lap_samples.loc[start:end, "dt_s"].sum()) for start, end in merged
+        )
+        max_score_by_lap[str(lap_id)] = float(group["activity_score"].max())
+    return active_time_by_lap, max_score_by_lap
+
+
 def preprocess_dataset(
     session_specs: list[dict[str, Any]],
     output_dir: Path,
@@ -113,6 +140,7 @@ def preprocess_dataset(
         count_specs = {
             "events/braking": "braking_event_count",
             "events/abs_activity": "abs_wheel_episode_count",
+            "events/tc_activity": "tc_wheel_episode_count",
             "events/shifts": "shift_count",
             "events/lockups": "lockup_event_count",
             "events/wheelspin": "wheelspin_event_count",
@@ -123,30 +151,21 @@ def preprocess_dataset(
             laps[column] = laps["lap_id"].map(counts).fillna(0).astype(int)
 
         abs_events = event_tables.get("events/abs_activity", pd.DataFrame())
-        active_time_by_lap: dict[str, float] = {}
-        max_score_by_lap: dict[str, float] = {}
-        if not abs_events.empty:
-            for lap_id, group in abs_events.groupby("lap_id", sort=False):
-                sample_ranges = sorted(
-                    (int(row.start_sample), int(row.end_sample))
-                    for row in group.itertuples(index=False)
-                )
-                merged: list[tuple[int, int]] = []
-                for start, end in sample_ranges:
-                    if merged and start <= merged[-1][1] + 1:
-                        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-                    else:
-                        merged.append((start, end))
-                lap_samples = samples[samples["lap_id"] == lap_id].set_index("sample_index")
-                active_time_by_lap[str(lap_id)] = sum(
-                    float(lap_samples.loc[start:end, "dt_s"].sum()) for start, end in merged
-                )
-                max_score_by_lap[str(lap_id)] = float(group["activity_score"].max())
+        active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(abs_events, samples)
         laps["abs_active_time_s_union"] = laps["lap_id"].map(active_time_by_lap).fillna(0.0)
         laps["abs_active_braking_pct"] = (
             laps["abs_active_time_s_union"] / laps["braking_time_s"].replace(0, pd.NA) * 100.0
         ).fillna(0.0)
         laps["max_abs_activity_score"] = laps["lap_id"].map(max_score_by_lap).fillna(0.0)
+
+        tc_events = event_tables.get("events/tc_activity", pd.DataFrame())
+        active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(tc_events, samples)
+        laps["tc_active_time_s_union"] = laps["lap_id"].map(active_time_by_lap).fillna(0.0)
+        powered_time_s = laps["full_throttle_time_s"] + laps["partial_throttle_time_s"]
+        laps["tc_active_throttle_pct"] = (
+            laps["tc_active_time_s_union"] / powered_time_s.replace(0, pd.NA) * 100.0
+        ).fillna(0.0)
+        laps["max_tc_activity_score"] = laps["lap_id"].map(max_score_by_lap).fillna(0.0)
 
     setup_diffs = build_setup_diffs(setups)
     passes = segment_passes(samples, laps, segment_definitions)
@@ -190,6 +209,7 @@ def preprocess_dataset(
             "Parquet unavailable; CSV fallback used" if storage.format == "csv" else None,
             "Native AC normalized spline position is not present in parsed replay data",
             "ABS activity events are spectral candidates; observed frequencies may be aliased by the replay sample rate",
+            "TC activity events are rear-wheel spectral candidates; drivetrain metadata and direct torque cut are unavailable",
         ],
     }
     manifest["warnings"] = [item for item in manifest["warnings"] if item]

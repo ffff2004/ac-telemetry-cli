@@ -98,7 +98,7 @@ def build_ai_context(
         "known_limitations": [
             "Replay CSV does not contain native normalized spline position",
             "Progress uses normalized cumulative path distance unless another source is added",
-            "TC intervention is a proxy because torque cut is not recorded",
+            "TC activity events are spectral candidates because torque cut is not recorded",
             "Pit-lane and track-valid flags are unavailable in the parsed replay data",
         ],
         "data_quality": {
