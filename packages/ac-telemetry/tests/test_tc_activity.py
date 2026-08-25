@@ -5,7 +5,7 @@ import pandas as pd
 
 from ac_telemetry.config import ProcessingConfig
 from ac_telemetry.events import detect_throttle
-from ac_telemetry.tc_activity import detect_tc_activity
+from ac_telemetry.assist_activity import detect_tc_activity
 
 
 DT = 0.015

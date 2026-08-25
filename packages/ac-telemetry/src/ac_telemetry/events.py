@@ -5,9 +5,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .abs_activity import detect_abs_activity
+from .assist_activity import detect_abs_activity, detect_tc_activity
 from .config import ProcessingConfig
-from .tc_activity import detect_tc_activity
 from .util import close_short_false_gaps, contiguous_true_runs, stable_id
 
 
