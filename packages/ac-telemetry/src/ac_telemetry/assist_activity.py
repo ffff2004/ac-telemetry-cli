@@ -162,6 +162,17 @@ class _WindowEvidence:
     activity_score: float
 
 
+@dataclass(slots=True)
+class _WindowSignals:
+    """Spectral values shared by all wheels in one analysis window."""
+
+    frequencies: np.ndarray
+    powers: dict[str, np.ndarray]
+    high_signals: dict[str, np.ndarray]
+    high_rms: dict[str, float]
+    allowed: bool
+
+
 def _abs_spec(config: ProcessingConfig) -> _ActivitySpec:
     return _ActivitySpec(
         kind="abs",
@@ -226,12 +237,17 @@ def _detrend(values: np.ndarray) -> np.ndarray:
     return filled - np.polyval(np.polyfit(x, filled, 2), x)
 
 
-def _spectrum(
-    values: np.ndarray, sample_rate_hz: float
-) -> tuple[np.ndarray, np.ndarray]:
-    windowed = _detrend(values) * np.hanning(len(values))
-    frequencies = np.fft.rfftfreq(len(windowed), d=1.0 / sample_rate_hz)
-    return frequencies, np.abs(np.fft.rfft(windowed)) ** 2
+def _window_power(detrended: np.ndarray, hanning: np.ndarray) -> np.ndarray:
+    return np.abs(np.fft.rfft(detrended * hanning)) ** 2
+
+
+def _high_band_signal(
+    detrended: np.ndarray,
+    high_mask: np.ndarray,
+) -> np.ndarray:
+    transformed = np.fft.rfft(detrended)
+    transformed[high_mask] = 0
+    return np.fft.irfft(transformed, n=len(detrended))
 
 
 def _band_power(
@@ -243,10 +259,10 @@ def _band_power(
 def _band_signal(
     values: np.ndarray, sample_rate_hz: float, low: float, high: float
 ) -> np.ndarray:
-    transformed = np.fft.rfft(_detrend(values))
-    frequencies = np.fft.rfftfreq(len(values), d=1.0 / sample_rate_hz)
-    transformed[(frequencies < low) | (frequencies > high)] = 0
-    return np.fft.irfft(transformed, n=len(values))
+    detrended = _detrend(values)
+    frequencies = np.fft.rfftfreq(len(detrended), d=1.0 / sample_rate_hz)
+    high_mask = (frequencies < low) | (frequencies > high)
+    return _high_band_signal(detrended, high_mask)
 
 
 def _high_band_rms(
@@ -334,30 +350,27 @@ def _noise_floors(
 
 
 def _tc_window_allowed(
-    segment: pd.DataFrame,
+    brake_values: np.ndarray,
+    gear_values: np.ndarray | None,
+    shift_indices: np.ndarray,
     start: int,
     end: int,
-    sample_rate_hz: float,
-    config: ProcessingConfig,
+    shift_margin: int,
+    brake_active_threshold: float,
 ) -> bool:
-    if (
-        float(segment["brake_n"].iloc[start : end + 1].mean())
-        >= config.brake_active_threshold
-    ):
+    if float(np.mean(brake_values[start:end])) >= brake_active_threshold:
         return False
-    if "gear_physical" not in segment:
+    if gear_values is None:
         return True
-    gears = segment["gear_physical"].fillna(0).to_numpy(int)
-    window_gears = gears[start : end + 1]
+    window_gears = gear_values[start:end]
     stable_forward = (
         len(window_gears) > 0
-        and np.all(window_gears == window_gears[0])
+        and bool(np.all(window_gears == window_gears[0]))
         and window_gears[0] > 0
     )
-    shift_indices = np.flatnonzero(gears[1:] != gears[:-1]) + 1
-    margin = round(config.tc_shift_exclusion_s * sample_rate_hz)
     away_from_shift = not np.any(
-        (shift_indices >= start - margin) & (shift_indices <= end + margin)
+        (shift_indices >= start - shift_margin)
+        & (shift_indices <= end - 1 + shift_margin)
     )
     return bool(stable_forward and away_from_shift)
 
@@ -371,19 +384,17 @@ def _window_evidence(
     high_max_hz: float,
     noise_floor: float,
     spec: _ActivitySpec,
-    config: ProcessingConfig,
+    cached: _WindowSignals,
 ) -> _WindowEvidence:
-    wheel_values = (
-        segment[f"wheel_{wheel}_slip_ratio"].iloc[start : end + 1].to_numpy(float)
-    )
-    opposite_values = (
-        segment[f"wheel_{_OPPOSITE_WHEEL[wheel]}_slip_ratio"]
-        .iloc[start : end + 1]
-        .to_numpy(float)
-    )
-    control_values = segment[spec.control_column].iloc[start : end + 1].to_numpy(float)
-    frequencies, wheel_power = _spectrum(wheel_values, sample_rate_hz)
-    _, control_power = _spectrum(control_values, sample_rate_hz)
+    wheel_column = f"wheel_{wheel}_slip_ratio"
+    opposite_column = f"wheel_{_OPPOSITE_WHEEL[wheel]}_slip_ratio"
+    frequencies = cached.frequencies
+    wheel_power = cached.powers[wheel_column]
+    control_power = cached.powers[spec.control_column]
+    wheel_high = cached.high_signals[wheel_column]
+    opposite_high = cached.high_signals[opposite_column]
+    high_rms = cached.high_rms[wheel_column]
+    allowed = cached.allowed
     low_power = _band_power(
         frequencies, wheel_power, spec.low_frequency_min_hz, spec.low_frequency_max_hz
     )
@@ -399,7 +410,6 @@ def _window_evidence(
     high_to_low = high_power / max(low_power, epsilon)
     high_fraction = high_power / max(analysis_power, epsilon)
     control_high_fraction = control_high_power / max(control_analysis_power, epsilon)
-    high_rms = _high_band_rms(wheel_values, sample_rate_hz, spec, high_max_hz)
     noise_excess = (
         high_rms / max(noise_floor, epsilon)
         if np.isfinite(noise_floor)
@@ -419,12 +429,6 @@ def _window_evidence(
     else:
         peak_frequency = centroid = float("nan")
 
-    wheel_high = _band_signal(
-        wheel_values, sample_rate_hz, spec.high_frequency_min_hz, high_max_hz
-    )
-    opposite_high = _band_signal(
-        opposite_values, sample_rate_hz, spec.high_frequency_min_hz, high_max_hz
-    )
     axle_correlation = _safe_correlation(wheel_high, opposite_high)
     ratio_score = float(
         np.clip(
@@ -474,7 +478,6 @@ def _window_evidence(
             + 0.10 * independence_score
             + 0.10 * noise_score
         )
-        allowed = True
     else:
         activity_score = (
             0.40 * ratio_score
@@ -482,7 +485,6 @@ def _window_evidence(
             + 0.20 * pedal_score
             + 0.10 * noise_score
         )
-        allowed = _tc_window_allowed(segment, start, end, sample_rate_hz, config)
     candidate = bool(
         allowed
         and high_to_low >= spec.min_high_to_low_power_ratio
@@ -506,6 +508,89 @@ def _window_evidence(
         axle_correlation,
         activity_score,
     )
+
+
+def _build_window_signals(
+    segment: pd.DataFrame,
+    starts: list[int],
+    window_samples: int,
+    sample_rate_hz: float,
+    high_max_hz: float,
+    spec: _ActivitySpec,
+    config: ProcessingConfig,
+) -> list[_WindowSignals]:
+    """Cache spectral values shared by all wheels in each analysis window."""
+    wheel_columns = list(
+        dict.fromkeys(
+            [
+                f"wheel_{wheel}_slip_ratio"
+                for wheel in (
+                    *spec.wheels,
+                    *(_OPPOSITE_WHEEL[wheel] for wheel in spec.wheels),
+                )
+            ]
+        )
+    )
+    wheel_columns = [column for column in wheel_columns if column in segment]
+    signal_arrays = {
+        column: segment[column].to_numpy(float) for column in wheel_columns
+    }
+    control_values = segment[spec.control_column].to_numpy(float)
+    brake_values = segment["brake_n"].to_numpy(float) if spec.kind == "tc" else None
+    gear_values = None
+    shift_indices = np.empty(0, dtype=np.int64)
+    if spec.kind == "tc" and "gear_physical" in segment:
+        gear_values = segment["gear_physical"].fillna(0).to_numpy(int)
+        shift_indices = np.flatnonzero(gear_values[1:] != gear_values[:-1]) + 1
+    margin = (
+        round(config.tc_shift_exclusion_s * sample_rate_hz) if spec.kind == "tc" else 0
+    )
+    frequencies = np.fft.rfftfreq(window_samples, d=1.0 / sample_rate_hz)
+    signal_high_mask = (frequencies < spec.high_frequency_min_hz) | (
+        frequencies > high_max_hz
+    )
+    hanning = np.hanning(window_samples)
+    cached_windows: list[_WindowSignals] = []
+    for start in starts:
+        end = start + window_samples
+        detrended = {
+            column: _detrend(values[start:end])
+            for column, values in signal_arrays.items()
+        }
+        powers: dict[str, np.ndarray] = {}
+        high_signals: dict[str, np.ndarray] = {}
+        high_rms: dict[str, float] = {}
+        for column, values in detrended.items():
+            powers[column] = _window_power(values, hanning)
+            high_signal = _high_band_signal(values, signal_high_mask)
+            high_signals[column] = high_signal
+            high_rms[column] = float(np.sqrt(np.mean(high_signal**2)))
+        control_detrended = _detrend(control_values[start:end])
+        powers[spec.control_column] = _window_power(control_detrended, hanning)
+
+        if spec.kind == "tc":
+            assert brake_values is not None
+            allowed = _tc_window_allowed(
+                brake_values,
+                gear_values,
+                shift_indices,
+                start,
+                end,
+                margin,
+                config.brake_active_threshold,
+            )
+        else:
+            allowed = True
+        cached_windows.append(
+            _WindowSignals(
+                frequencies,
+                powers,
+                high_signals,
+                high_rms,
+                allowed,
+            )
+        )
+    return cached_windows
 
 
 def _quality_flags(
@@ -675,6 +760,15 @@ def _detect_activity(
         window_samples = max(16, round(spec.analysis_window_s / median_dt))
         hop_samples = max(1, round(spec.analysis_hop_s / median_dt))
         starts = _window_starts(len(segment), window_samples, hop_samples)
+        cached_windows = _build_window_signals(
+            segment,
+            starts,
+            window_samples,
+            sample_rate_hz,
+            high_max_hz,
+            spec,
+            config,
+        )
         for wheel in spec.wheels:
             required = [
                 f"wheel_{wheel}_slip_ratio",
@@ -695,9 +789,9 @@ def _detect_activity(
                         (str(parent_event.session_id), wheel), float("nan")
                     ),
                     spec,
-                    config,
+                    cached,
                 )
-                for start in starts
+                for start, cached in zip(starts, cached_windows, strict=True)
             ]
             mask = close_short_false_gaps(
                 np.asarray([item.candidate for item in windows], dtype=bool),
