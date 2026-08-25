@@ -1,8 +1,5 @@
-from __future__ import annotations
-
-from generate_multi_car_csp_replay import make_replay
-
 from ac_replay_parser import parse_replay_data
+from generate_multi_car_csp_replay import make_replay
 
 
 def test_parse_multi_car_csp_replay() -> None:
@@ -11,7 +8,10 @@ def test_parse_multi_car_csp_replay() -> None:
     assert replay.header.version == 16
     assert replay.header.num_cars == 2
     assert replay.driver_names == ("Alice", "Bob")
-    assert [car.header.car_id for car in replay.cars] == ["fixture_car_0", "fixture_car_1"]
+    assert [car.header.car_id for car in replay.cars] == [
+        "fixture_car_0",
+        "fixture_car_1",
+    ]
     assert all(len(car.frames) == 3 for car in replay.cars)
     assert [car.extra_version for car in replay.cars] == [6, 7]
     assert replay.cars[0].frames[1].position.x == 2.25

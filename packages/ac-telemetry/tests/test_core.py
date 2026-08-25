@@ -1,8 +1,9 @@
-from __future__ import annotations
-
 import numpy as np
-
-from ac_telemetry.util import close_short_false_gaps, contiguous_true_runs, parse_datetime_from_ac_filename
+from ac_telemetry.util import (
+    close_short_false_gaps,
+    contiguous_true_runs,
+    parse_datetime_from_ac_filename,
+)
 
 
 def test_true_runs() -> None:

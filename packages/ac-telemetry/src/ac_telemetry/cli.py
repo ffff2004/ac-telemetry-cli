@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import json
 import shutil
@@ -23,7 +21,9 @@ def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def _load_session_specs(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path | None]:
+def _load_session_specs(
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], Path | None]:
     if args.config:
         config_path = Path(args.config).resolve()
         data = json_load(config_path)
@@ -163,16 +163,22 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_cmd.add_argument("replays", nargs="+")
     inspect_cmd.set_defaults(func=command_inspect)
 
-    preprocess = sub.add_parser("preprocess", help="Build a normalized analysis dataset")
+    preprocess = sub.add_parser(
+        "preprocess", help="Build a normalized analysis dataset"
+    )
     preprocess.add_argument("replays", nargs="*")
-    preprocess.add_argument("--config", help="Dataset JSON containing per-session replay/setup mappings")
+    preprocess.add_argument(
+        "--config", help="Dataset JSON containing per-session replay/setup mappings"
+    )
     preprocess.add_argument("--setup")
     preprocess.add_argument("--setup-sp")
     preprocess.add_argument("--setup-label")
     preprocess.add_argument("--driver-name", help="Process only the named driver's car")
     preprocess.add_argument("--segments")
     preprocess.add_argument("--output", required=True)
-    preprocess.add_argument("--storage", choices=["auto", "parquet", "csv"], default="auto")
+    preprocess.add_argument(
+        "--storage", choices=["auto", "parquet", "csv"], default="auto"
+    )
     preprocess.add_argument("--overwrite", action="store_true")
     preprocess.set_defaults(func=command_preprocess)
 
@@ -180,13 +186,19 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("dataset")
     validate.set_defaults(func=command_validate)
 
-    summarize = sub.add_parser("summarize", help="Regenerate compact AI/statistical summaries")
+    summarize = sub.add_parser(
+        "summarize", help="Regenerate compact AI/statistical summaries"
+    )
     summarize.add_argument("dataset")
     summarize.set_defaults(func=command_summarize)
 
     export = sub.add_parser("export", help="Export one logical table to CSV")
     export.add_argument("dataset")
-    export.add_argument("--table", required=True, help="Logical table name, e.g. laps or segments/passes")
+    export.add_argument(
+        "--table",
+        required=True,
+        help="Logical table name, e.g. laps or segments/passes",
+    )
     export.add_argument("--output", required=True)
     export.set_defaults(func=command_export)
 
@@ -204,7 +216,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (ValueError, FileNotFoundError, FileExistsError, KeyError, RuntimeError) as exc:
+    except (
+        ValueError,
+        FileNotFoundError,
+        FileExistsError,
+        KeyError,
+        RuntimeError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

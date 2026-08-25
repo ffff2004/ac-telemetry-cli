@@ -1,12 +1,11 @@
-from __future__ import annotations
-
 import hashlib
 import json
 import math
 import re
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -25,13 +24,15 @@ def stable_id(*parts: object, length: int = 16) -> str:
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def json_dump(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False, default=json_default),
+        json.dumps(
+            value, ensure_ascii=False, indent=2, allow_nan=False, default=json_default
+        ),
         encoding="utf-8",
     )
 
@@ -92,7 +93,7 @@ def close_short_false_gaps(mask: np.ndarray, max_gap_samples: int) -> np.ndarray
 def safe_float(value: object, default: float | None = None) -> float | None:
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
     return result if math.isfinite(result) else default
 

@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 import pytest
-
 from ac_telemetry.manifest import DATASET_SCHEMA_VERSION, require_compatible_schema
 
 

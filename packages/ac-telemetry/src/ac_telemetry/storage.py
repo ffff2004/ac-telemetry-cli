@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +28,8 @@ class DatasetStorage:
             )
         self.format = (
             "parquet"
-            if requested_format == "parquet" or (requested_format == "auto" and parquet_available)
+            if requested_format == "parquet"
+            or (requested_format == "auto" and parquet_available)
             else "csv"
         )
 
@@ -46,7 +45,9 @@ class DatasetStorage:
             frame.to_parquet(path, index=False)
         else:
             frame.to_csv(path, index=False)
-        return TableRef(logical_name, relative.as_posix(), len(frame), len(frame.columns))
+        return TableRef(
+            logical_name, relative.as_posix(), len(frame), len(frame.columns)
+        )
 
     def read(self, relative_path: str) -> pd.DataFrame:
         path = self.root / relative_path

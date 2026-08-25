@@ -3,3 +3,44 @@ members = [
   "packages/ac-telemetry",
   "packages/ac-replay-parser",
 ]
+
+[dependency-groups]
+dev = [
+  "pre-commit>=4.0",
+  "pyright>=1.1.406",
+  "pytest>=8.0",
+  "ruff>=0.14.0",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+include = [
+  "packages/ac-replay-parser/src",
+  "packages/ac-telemetry/src",
+]
+exclude = [
+  "**/__pycache__",
+  ".venv",
+  "dist",
+  "packages/*/tests",
+]
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+
+[[tool.pyright.executionEnvironments]]
+root = "packages/ac-telemetry/src"
+
+# pandas' DataFrame and GroupBy APIs are intentionally dynamic; their stubs
+# cannot describe this dataset's column schema without duplicating the schema.
+reportArgumentType = "none"
+reportAttributeAccessIssue = "none"

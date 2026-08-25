@@ -1,19 +1,21 @@
-from __future__ import annotations
-
 import importlib.util
 from pathlib import Path
 
 from ac_telemetry.config import ProcessingConfig
 from ac_telemetry.replay import inspect_replay, load_replay
 
-
 GENERATOR_PATH = (
-    Path(__file__).parents[2] / "ac-replay-parser" / "tests" / "generate_multi_car_csp_replay.py"
+    Path(__file__).parents[2]
+    / "ac-replay-parser"
+    / "tests"
+    / "generate_multi_car_csp_replay.py"
 )
 
 
 def _make_replay(driver_names: list[str], frames: int) -> bytes:
-    spec = importlib.util.spec_from_file_location("test_replay_generator", GENERATOR_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "test_replay_generator", GENERATOR_PATH
+    )
     if spec is None or spec.loader is None:
         raise AssertionError(f"Unable to load fixture generator: {GENERATOR_PATH}")
     module = importlib.util.module_from_spec(spec)

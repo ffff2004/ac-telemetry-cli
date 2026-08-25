@@ -1,11 +1,7 @@
-from __future__ import annotations
-
 import numpy as np
 import pandas as pd
-
 from ac_telemetry.assist_activity import detect_abs_activity
 from ac_telemetry.config import ProcessingConfig
-
 
 DT = 0.015
 

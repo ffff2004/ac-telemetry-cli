@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -9,7 +7,20 @@ import pandas as pd
 def _stats(group: pd.Series, prefix: str) -> dict[str, float | int | None]:
     values = pd.to_numeric(group, errors="coerce").dropna().to_numpy(float)
     if values.size == 0:
-        return {f"{prefix}_{key}": None for key in ["count", "mean", "median", "std", "mad", "min", "p25", "p75", "max"]}
+        return {
+            f"{prefix}_{key}": None
+            for key in [
+                "count",
+                "mean",
+                "median",
+                "std",
+                "mad",
+                "min",
+                "p25",
+                "p75",
+                "max",
+            ]
+        }
     median = float(np.median(values))
     return {
         f"{prefix}_count": int(values.size),
@@ -24,13 +35,17 @@ def _stats(group: pd.Series, prefix: str) -> dict[str, float | int | None]:
     }
 
 
-def build_segment_statistics(passes: pd.DataFrame, sessions: pd.DataFrame) -> pd.DataFrame:
+def build_segment_statistics(
+    passes: pd.DataFrame, sessions: pd.DataFrame
+) -> pd.DataFrame:
     if passes.empty:
         return pd.DataFrame()
-    merged = passes.merge(sessions[["session_id", "setup_id"]], on="session_id", how="left")
+    merged = passes.merge(
+        sessions[["session_id", "setup_id"]], on="session_id", how="left"
+    )
     rows: list[dict[str, Any]] = []
     for keys, group in merged.groupby(["setup_id", "segment_id"], dropna=False):
-        setup_id, segment_id = keys
+        setup_id, segment_id = cast(tuple[Any, Any], keys)
         valid = group[group["valid_for_comparison"]]
         target = valid if not valid.empty else group
         row = {
@@ -51,7 +66,9 @@ def build_segment_statistics(passes: pd.DataFrame, sessions: pd.DataFrame) -> pd
         ]:
             row.update(_stats(target[column], prefix))
         fastest = target.nsmallest(min(3, len(target)), "segment_time_s")
-        row["best_3_mean_time_s"] = float(fastest["segment_time_s"].mean()) if len(fastest) else None
+        row["best_3_mean_time_s"] = (
+            float(fastest["segment_time_s"].mean()) if len(fastest) else None
+        )
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -103,7 +120,11 @@ def build_ai_context(
         ],
         "data_quality": {
             "flag_count": int(len(quality_flags)),
-            "error_count": int((quality_flags.get("severity", pd.Series(dtype=str)) == "error").sum()),
-            "warning_count": int((quality_flags.get("severity", pd.Series(dtype=str)) == "warning").sum()),
+            "error_count": int(
+                (quality_flags.get("severity", pd.Series(dtype=str)) == "error").sum()
+            ),
+            "warning_count": int(
+                (quality_flags.get("severity", pd.Series(dtype=str)) == "warning").sum()
+            ),
         },
     }

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -7,7 +5,6 @@ import numpy as np
 import pandas as pd
 
 from .util import json_load
-
 
 SUPPORTED_COORDINATES = {"actual_distance_m", "normalized_progress"}
 
@@ -26,7 +23,9 @@ def load_segment_definitions(path: Path | None) -> dict[str, Any] | None:
     return data
 
 
-def _segment_mask(g: pd.DataFrame, start: float, end: float, coordinate: str) -> pd.Series:
+def _segment_mask(
+    g: pd.DataFrame, start: float, end: float, coordinate: str
+) -> pd.Series:
     column = "actual_distance_m" if coordinate == "actual_distance_m" else "progress"
     values = g[column]
     if start <= end:
@@ -72,7 +71,9 @@ def segment_passes(
             segment = g.loc[mask]
             if len(segment) < 2:
                 continue
-            coordinate_column = "actual_distance_m" if coordinate == "actual_distance_m" else "progress"
+            coordinate_column = (
+                "actual_distance_m" if coordinate == "actual_distance_m" else "progress"
+            )
             min_speed_idx = segment["speed_kmh"].idxmin()
             brake_mask = segment["is_braking"]
             throttle_mask = segment["throttle"] >= 0.05
@@ -93,28 +94,58 @@ def segment_passes(
                     "segment_start": start,
                     "segment_end": end,
                     "sample_count": len(segment),
-                    "segment_time_s": float(segment["lap_time_s"].iloc[-1] - segment["lap_time_s"].iloc[0]),
+                    "segment_time_s": float(
+                        segment["lap_time_s"].iloc[-1] - segment["lap_time_s"].iloc[0]
+                    ),
                     "entry_speed_kmh": float(segment["speed_kmh"].iloc[0]),
                     "exit_speed_kmh": float(segment["speed_kmh"].iloc[-1]),
                     "minimum_speed_kmh": float(segment["speed_kmh"].min()),
-                    "minimum_speed_position": float(segment.loc[min_speed_idx, coordinate_column]),
-                    "brake_start_position": _first_value(segment, brake_mask, coordinate_column),
-                    "brake_end_position": _last_value(segment, brake_mask, coordinate_column),
+                    "minimum_speed_position": float(
+                        segment.loc[min_speed_idx, coordinate_column]
+                    ),
+                    "brake_start_position": _first_value(
+                        segment, brake_mask, coordinate_column
+                    ),
+                    "brake_end_position": _last_value(
+                        segment, brake_mask, coordinate_column
+                    ),
                     "brake_duration_s": float(segment.loc[brake_mask, "dt_s"].sum()),
                     "peak_brake": float(segment["brake_n"].max()),
-                    "brake_impulse_proxy_s": float((segment["brake_n"] * segment["dt_s"]).sum()),
-                    "throttle_pickup_position": _first_value(segment, throttle_mask, coordinate_column),
-                    "full_throttle_position": _first_value(segment, full_mask, coordinate_column),
-                    "coasting_time_s": float(segment.loc[segment["is_coasting"], "dt_s"].sum()),
-                    "partial_throttle_time_s": float(segment.loc[segment["is_partial_throttle"], "dt_s"].sum()),
-                    "front_lock_time_s": float(segment.loc[segment["is_front_lock_candidate"], "dt_s"].sum()),
-                    "rear_wheelspin_time_s": float(segment.loc[segment["is_rear_wheelspin_candidate"], "dt_s"].sum()),
+                    "brake_impulse_proxy_s": float(
+                        (segment["brake_n"] * segment["dt_s"]).sum()
+                    ),
+                    "throttle_pickup_position": _first_value(
+                        segment, throttle_mask, coordinate_column
+                    ),
+                    "full_throttle_position": _first_value(
+                        segment, full_mask, coordinate_column
+                    ),
+                    "coasting_time_s": float(
+                        segment.loc[segment["is_coasting"], "dt_s"].sum()
+                    ),
+                    "partial_throttle_time_s": float(
+                        segment.loc[segment["is_partial_throttle"], "dt_s"].sum()
+                    ),
+                    "front_lock_time_s": float(
+                        segment.loc[segment["is_front_lock_candidate"], "dt_s"].sum()
+                    ),
+                    "rear_wheelspin_time_s": float(
+                        segment.loc[
+                            segment["is_rear_wheelspin_candidate"], "dt_s"
+                        ].sum()
+                    ),
                     "rear_slip_integral": float(
-                        (segment["rear_slip_ratio_max"].clip(lower=0) * segment["dt_s"]).sum()
+                        (
+                            segment["rear_slip_ratio_max"].clip(lower=0)
+                            * segment["dt_s"]
+                        ).sum()
                     ),
                     "max_abs_steer": float(segment["steerAngle"].abs().max()),
                     "steering_sign_changes": int(
-                        np.count_nonzero(np.diff(np.sign(segment["steerAngle"].fillna(0).to_numpy())) != 0)
+                        np.count_nonzero(
+                            np.diff(np.sign(segment["steerAngle"].fillna(0).to_numpy()))
+                            != 0
+                        )
                     ),
                     "actual_path_length_m": path_length,
                     "is_complete_lap": bool(lap_info["is_complete"]),

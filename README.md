@@ -23,10 +23,15 @@ CSV.
 From the repository root:
 
 ```bash
-uv sync --package ac-telemetry --extra dev
-uv run --package ac-telemetry pytest packages/ac-telemetry/tests
-uv run --package ac-replay-parser --extra dev pytest packages/ac-replay-parser/tests
+uv sync
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push --install-hooks
+uv run pre-commit run --all-files
+uv run pytest packages/ac-replay-parser/tests packages/ac-telemetry/tests
+uv build --all-packages
 ```
+
+The workspace requires Python 3.14. Commit hooks format and lint Python files
+and run pyright; push hooks run the full test suite and build both packages.
 
 See the package READMEs for their APIs, CLI usage, data model, and limitations:
 

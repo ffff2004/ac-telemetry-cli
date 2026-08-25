@@ -1,0 +1,40 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format
+        language: system
+        types_or: [python, pyi]
+        stages: [pre-commit]
+
+      - id: ruff-check-fix
+        name: ruff check --fix
+        entry: uv run --locked ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        stages: [pre-commit]
+
+      - id: pyright
+        name: pyright
+        entry: uv run --locked pyright
+        language: system
+        pass_filenames: false
+        files: ^(?:packages/.*/src/.*\.pyi?|pyproject\.toml|uv\.lock)$
+        stages: [pre-commit]
+
+      - id: pytest
+        name: pytest
+        entry: uv run --locked pytest packages/ac-replay-parser/tests packages/ac-telemetry/tests
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: uv-build
+        name: uv build
+        entry: uv build --all-packages
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

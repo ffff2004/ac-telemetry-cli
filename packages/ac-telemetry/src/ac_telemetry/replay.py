@@ -1,18 +1,14 @@
-from __future__ import annotations
-
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-
 from ac_replay_parser import ParsedCar, ParsedReplay, parse_replay_data
 
 from .config import ProcessingConfig
 from .util import parse_datetime_from_ac_filename, sha256_file, stable_id
-
 
 WHEELS = {"fl": "wheelFL", "fr": "wheelFR", "rl": "wheelRL", "rr": "wheelRR"}
 
@@ -121,7 +117,7 @@ def _car_to_raw(car: ParsedCar) -> pd.DataFrame:
 
 def _numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     existing = [column for column in columns if column in df.columns]
-    return df[existing].apply(pd.to_numeric, errors="coerce")
+    return cast(pd.DataFrame, df[existing].apply(pd.to_numeric, errors="coerce"))
 
 
 def _lap_segments(df: pd.DataFrame, tolerance_ms: float) -> pd.Series:
@@ -144,19 +140,40 @@ def _derive_sample_channels(
     interval_s = float(metadata.get("recordingInterval", 15.0)) / 1000.0
 
     numeric_columns = [
-        "frame", "position.x", "position.y", "position.z",
-        "rotation.x", "rotation.y", "rotation.z",
-        "velocity.x", "velocity.y", "velocity.z",
-        "currentLap", "currentLapTime", "lastLapTime", "bestLapTime",
-        "gas", "brake", "clutch", "steerAngle", "gear", "rpm", "fuel",
-        "drivetrainSpeed", "fuelPerLap",
+        "frame",
+        "position.x",
+        "position.y",
+        "position.z",
+        "rotation.x",
+        "rotation.y",
+        "rotation.z",
+        "velocity.x",
+        "velocity.y",
+        "velocity.z",
+        "currentLap",
+        "currentLapTime",
+        "lastLapTime",
+        "bestLapTime",
+        "gas",
+        "brake",
+        "clutch",
+        "steerAngle",
+        "gear",
+        "rpm",
+        "fuel",
+        "drivetrainSpeed",
+        "fuelPerLap",
     ]
     for prefix in WHEELS.values():
         numeric_columns.extend(
             [
-                f"{prefix}.angularVelocity", f"{prefix}.slipAngle",
-                f"{prefix}.slipRatio", f"{prefix}.load",
-                f"{prefix}.position.x", f"{prefix}.position.y", f"{prefix}.position.z",
+                f"{prefix}.angularVelocity",
+                f"{prefix}.slipAngle",
+                f"{prefix}.slipRatio",
+                f"{prefix}.load",
+                f"{prefix}.position.x",
+                f"{prefix}.position.y",
+                f"{prefix}.position.z",
             ]
         )
     converted = _numeric(df, numeric_columns)
@@ -168,7 +185,9 @@ def _derive_sample_channels(
     df["source_frame"] = df["frame"].astype("Int64")
     df["source_lap_number"] = df["currentLap"].astype("Int64")
     df["lap_segment_index"] = _lap_segments(df, config.time_reset_tolerance_ms)
-    df["lap_id"] = [stable_id(session_id, segment) for segment in df["lap_segment_index"]]
+    df["lap_id"] = [
+        stable_id(session_id, segment) for segment in df["lap_segment_index"]
+    ]
     df["lap_time_s"] = df["currentLapTime"] / 1000.0
 
     source_time = df["frame"] * interval_s
@@ -183,12 +202,20 @@ def _derive_sample_channels(
     df["throttle"] = (df["gas"] / 255.0).clip(0, 1).fillna(0)
     df["brake_n"] = (df["brake"] / 255.0).clip(0, 1).fillna(0)
     # Most replay exports use 0..255 clutch; tolerate an already-normalized channel.
-    clutch_max = df["clutch"].max(skipna=True)
+    clutch_max = float(df["clutch"].max(skipna=True))
     df["clutch_n"] = (
-        (df["clutch"] / 255.0) if pd.notna(clutch_max) and clutch_max > 1.5 else df["clutch"]
-    ).clip(0, 1).fillna(0)
+        (
+            (df["clutch"] / 255.0)
+            if not np.isnan(clutch_max) and clutch_max > 1.5
+            else df["clutch"]
+        )
+        .clip(0, 1)
+        .fillna(0)
+    )
 
-    velocity = df[["velocity.x", "velocity.y", "velocity.z"]].fillna(0.0).to_numpy(float)
+    velocity = (
+        df[["velocity.x", "velocity.y", "velocity.z"]].fillna(0.0).to_numpy(float)
+    )
     speed_ms = np.linalg.norm(velocity, axis=1)
     df["speed_ms"] = speed_ms
     df["speed_kmh"] = speed_ms * 3.6
@@ -252,16 +279,17 @@ def _derive_sample_channels(
 
     df["progress"] = df["normalized_actual_distance"]
     df["progress_source"] = "cumulative_distance_proxy"
-    df["progress_confidence"] = np.where(df["normalized_actual_distance"].notna(), 0.55, 0.0)
+    df["progress_confidence"] = np.where(
+        df["normalized_actual_distance"].notna(), 0.55, 0.0
+    )
 
     # Gear coding observed in these exports: 1 is neutral, physical gear is raw-1.
     df["gear_raw"] = df["gear"].astype("Int64")
     df["gear_physical"] = (df["gear"] - 1).where(df["gear"] >= 2, 0).astype("Int64")
 
     df["is_moving"] = df["speed_kmh"] >= config.moving_speed_threshold_kmh
-    df["is_full_throttle"] = (
-        (df["throttle"] >= config.full_throttle_threshold)
-        & (df["brake_n"] < config.pedal_zero_threshold)
+    df["is_full_throttle"] = (df["throttle"] >= config.full_throttle_threshold) & (
+        df["brake_n"] < config.pedal_zero_threshold
     )
     df["is_partial_throttle"] = (
         (df["throttle"] >= config.pedal_zero_threshold)
@@ -269,14 +297,12 @@ def _derive_sample_channels(
         & (df["brake_n"] < config.pedal_zero_threshold)
     )
     df["is_braking"] = df["brake_n"] >= config.brake_active_threshold
-    df["is_coasting"] = (
-        (df["throttle"] < config.pedal_zero_threshold)
-        & (df["brake_n"] < config.pedal_zero_threshold)
+    df["is_coasting"] = (df["throttle"] < config.pedal_zero_threshold) & (
+        df["brake_n"] < config.pedal_zero_threshold
     )
     df["is_brake_throttle_overlap"] = (
-        (df["throttle"] >= config.pedal_zero_threshold)
-        & (df["brake_n"] >= config.brake_active_threshold)
-    )
+        df["throttle"] >= config.pedal_zero_threshold
+    ) & (df["brake_n"] >= config.brake_active_threshold)
 
     for short, prefix in WHEELS.items():
         rename = {
@@ -299,10 +325,18 @@ def _derive_sample_channels(
     df["rear_mean_slip_ratio"] = pd.concat([rl, rr], axis=1).mean(axis=1)
     df["front_slip_ratio_min"] = pd.concat([fl, fr], axis=1).min(axis=1)
     df["rear_slip_ratio_max"] = pd.concat([rl, rr], axis=1).max(axis=1)
-    df["front_total_load"] = df[["wheel_fl_load", "wheel_fr_load"]].sum(axis=1, min_count=1)
-    df["rear_total_load"] = df[["wheel_rl_load", "wheel_rr_load"]].sum(axis=1, min_count=1)
-    df["left_total_load"] = df[["wheel_fl_load", "wheel_rl_load"]].sum(axis=1, min_count=1)
-    df["right_total_load"] = df[["wheel_fr_load", "wheel_rr_load"]].sum(axis=1, min_count=1)
+    df["front_total_load"] = df[["wheel_fl_load", "wheel_fr_load"]].sum(
+        axis=1, min_count=1
+    )
+    df["rear_total_load"] = df[["wheel_rl_load", "wheel_rr_load"]].sum(
+        axis=1, min_count=1
+    )
+    df["left_total_load"] = df[["wheel_fl_load", "wheel_rl_load"]].sum(
+        axis=1, min_count=1
+    )
+    df["right_total_load"] = df[["wheel_fr_load", "wheel_rr_load"]].sum(
+        axis=1, min_count=1
+    )
 
     df["is_front_lock_candidate"] = (
         df["is_braking"]
@@ -321,40 +355,87 @@ def _derive_sample_channels(
     df["is_valid_sample"] = df["lap_time_s"].notna() & df["speed_kmh"].notna()
 
     standard_columns = [
-        "session_id", "sample_index", "source_frame", "timestamp_s", "dt_s",
-        "lap_id", "lap_segment_index", "source_lap_number", "lap_time_s",
-        "position.x", "position.y", "position.z",
-        "actual_distance_m", "normalized_actual_distance", "progress",
-        "progress_source", "progress_confidence",
-        "velocity.x", "velocity.y", "velocity.z", "speed_ms", "speed_kmh",
-        "accel_world_x_ms2", "accel_world_z_ms2", "long_accel_ms2", "lat_accel_ms2",
-        "long_g", "lat_g", "yaw_rad", "yaw_rate_rad_s",
-        "throttle_raw", "brake_raw", "clutch_raw", "throttle", "brake_n", "clutch_n",
-        "steerAngle", "gear_raw", "gear_physical", "rpm", "drivetrainSpeed",
-        "fuel", "fuelPerLap",
+        "session_id",
+        "sample_index",
+        "source_frame",
+        "timestamp_s",
+        "dt_s",
+        "lap_id",
+        "lap_segment_index",
+        "source_lap_number",
+        "lap_time_s",
+        "position.x",
+        "position.y",
+        "position.z",
+        "actual_distance_m",
+        "normalized_actual_distance",
+        "progress",
+        "progress_source",
+        "progress_confidence",
+        "velocity.x",
+        "velocity.y",
+        "velocity.z",
+        "speed_ms",
+        "speed_kmh",
+        "accel_world_x_ms2",
+        "accel_world_z_ms2",
+        "long_accel_ms2",
+        "lat_accel_ms2",
+        "long_g",
+        "lat_g",
+        "yaw_rad",
+        "yaw_rate_rad_s",
+        "throttle_raw",
+        "brake_raw",
+        "clutch_raw",
+        "throttle",
+        "brake_n",
+        "clutch_n",
+        "steerAngle",
+        "gear_raw",
+        "gear_physical",
+        "rpm",
+        "drivetrainSpeed",
+        "fuel",
+        "fuelPerLap",
     ]
     for short in WHEELS:
         standard_columns.extend(
             [
-                f"wheel_{short}_angular_velocity", f"wheel_{short}_slip_angle",
-                f"wheel_{short}_slip_ratio", f"wheel_{short}_load",
-                f"wheel_{short}_position_x", f"wheel_{short}_position_y",
+                f"wheel_{short}_angular_velocity",
+                f"wheel_{short}_slip_angle",
+                f"wheel_{short}_slip_ratio",
+                f"wheel_{short}_load",
+                f"wheel_{short}_position_x",
+                f"wheel_{short}_position_y",
                 f"wheel_{short}_position_z",
             ]
         )
     standard_columns.extend(
         [
-            "front_mean_slip_ratio", "rear_mean_slip_ratio", "front_slip_ratio_min",
-            "rear_slip_ratio_max", "front_total_load", "rear_total_load",
-            "left_total_load", "right_total_load",
-            "is_moving", "is_full_throttle", "is_partial_throttle", "is_braking",
-            "is_coasting", "is_brake_throttle_overlap", "is_front_lock_candidate",
-            "is_rear_wheelspin_candidate", "is_in_pit", "is_off_track_candidate",
+            "front_mean_slip_ratio",
+            "rear_mean_slip_ratio",
+            "front_slip_ratio_min",
+            "rear_slip_ratio_max",
+            "front_total_load",
+            "rear_total_load",
+            "left_total_load",
+            "right_total_load",
+            "is_moving",
+            "is_full_throttle",
+            "is_partial_throttle",
+            "is_braking",
+            "is_coasting",
+            "is_brake_throttle_overlap",
+            "is_front_lock_candidate",
+            "is_rear_wheelspin_candidate",
+            "is_in_pit",
+            "is_off_track_candidate",
             "is_valid_sample",
         ]
     )
     available = [column for column in standard_columns if column in df.columns]
-    return df[available].copy(), flags
+    return cast(pd.DataFrame, df[available].copy()), flags
 
 
 def _build_laps(
@@ -400,8 +481,9 @@ def _build_laps(
         moving = g[g["is_moving"]]
         denominator = max(len(moving), 1)
         lap_time_s = official_lap_time_s or float(g["lap_time_s"].max())
-        start_fuel = float(g["fuel"].iloc[0]) if g["fuel"].notna().any() else np.nan
-        end_fuel = float(g["fuel"].iloc[-1]) if g["fuel"].notna().any() else np.nan
+        fuel = g["fuel"]
+        start_fuel = float(fuel.iloc[0]) if bool(fuel.notna().any()) else np.nan
+        end_fuel = float(fuel.iloc[-1]) if bool(fuel.notna().any()) else np.nan
         row: dict[str, Any] = {
             "lap_id": lap_id,
             "session_id": session_id,
@@ -420,25 +502,47 @@ def _build_laps(
             "sample_count": len(g),
             "start_fuel": start_fuel,
             "end_fuel": end_fuel,
-            "fuel_used": start_fuel - end_fuel if np.isfinite(start_fuel) and np.isfinite(end_fuel) else np.nan,
+            "fuel_used": start_fuel - end_fuel
+            if np.isfinite(start_fuel) and np.isfinite(end_fuel)
+            else np.nan,
             "actual_distance_m": float(g["actual_distance_m"].max()),
             "max_speed_kmh": float(g["speed_kmh"].max()),
-            "mean_speed_kmh": float(moving["speed_kmh"].mean()) if len(moving) else np.nan,
-            "min_speed_kmh": float(moving["speed_kmh"].min()) if len(moving) else np.nan,
+            "mean_speed_kmh": float(moving["speed_kmh"].mean())
+            if len(moving)
+            else np.nan,
+            "min_speed_kmh": float(moving["speed_kmh"].min())
+            if len(moving)
+            else np.nan,
             "max_rpm": float(g["rpm"].max()),
             "full_throttle_time_s": float(g.loc[g["is_full_throttle"], "dt_s"].sum()),
-            "full_throttle_pct": 100.0 * float(moving["is_full_throttle"].sum()) / denominator,
-            "partial_throttle_time_s": float(g.loc[g["is_partial_throttle"], "dt_s"].sum()),
-            "partial_throttle_pct": 100.0 * float(moving["is_partial_throttle"].sum()) / denominator,
+            "full_throttle_pct": 100.0
+            * float(moving["is_full_throttle"].sum())
+            / denominator,
+            "partial_throttle_time_s": float(
+                g.loc[g["is_partial_throttle"], "dt_s"].sum()
+            ),
+            "partial_throttle_pct": 100.0
+            * float(moving["is_partial_throttle"].sum())
+            / denominator,
             "braking_time_s": float(g.loc[g["is_braking"], "dt_s"].sum()),
             "braking_pct": 100.0 * float(moving["is_braking"].sum()) / denominator,
             "coasting_time_s": float(g.loc[g["is_coasting"], "dt_s"].sum()),
             "coasting_pct": 100.0 * float(moving["is_coasting"].sum()) / denominator,
-            "overlap_time_s": float(g.loc[g["is_brake_throttle_overlap"], "dt_s"].sum()),
-            "front_lock_time_s": float(g.loc[g["is_front_lock_candidate"], "dt_s"].sum()),
-            "rear_wheelspin_time_s": float(g.loc[g["is_rear_wheelspin_candidate"], "dt_s"].sum()),
-            "front_slip_integral": float((g["front_slip_ratio_min"].clip(upper=0).abs() * g["dt_s"]).sum()),
-            "rear_slip_integral": float((g["rear_slip_ratio_max"].clip(lower=0) * g["dt_s"]).sum()),
+            "overlap_time_s": float(
+                g.loc[g["is_brake_throttle_overlap"], "dt_s"].sum()
+            ),
+            "front_lock_time_s": float(
+                g.loc[g["is_front_lock_candidate"], "dt_s"].sum()
+            ),
+            "rear_wheelspin_time_s": float(
+                g.loc[g["is_rear_wheelspin_candidate"], "dt_s"].sum()
+            ),
+            "front_slip_integral": float(
+                (g["front_slip_ratio_min"].clip(upper=0).abs() * g["dt_s"]).sum()
+            ),
+            "rear_slip_integral": float(
+                (g["rear_slip_ratio_max"].clip(lower=0) * g["dt_s"]).sum()
+            ),
             "rear_tire_stress_proxy": float(
                 (
                     g["rear_slip_ratio_max"].clip(lower=0)
@@ -456,14 +560,18 @@ def _build_laps(
         elif not complete:
             lap_class = "incomplete"
             reasons.append("no_confirmed_next_lap_transition")
-        elif row["actual_distance_m"] < 0.9 * float(samples.groupby("lap_id")["actual_distance_m"].max().median()):
+        elif row["actual_distance_m"] < 0.9 * float(
+            samples.groupby("lap_id")["actual_distance_m"].max().median()
+        ):
             lap_class = "pit_or_error"
             reasons.append("path_length_short_relative_to_session")
         else:
             lap_class = "unclassified_complete"
             reasons.append("complete_lap_without_semantic_pit_channel")
         row["lap_class"] = lap_class
-        row["classification_confidence"] = 0.95 if lap_class in {"fragment", "incomplete"} else 0.55
+        row["classification_confidence"] = (
+            0.95 if lap_class in {"fragment", "incomplete"} else 0.55
+        )
         row["classification_reasons"] = ";".join(reasons)
         rows.append(row)
     return pd.DataFrame(rows)
@@ -510,7 +618,9 @@ def load_replay(
         raw["_lap_segment_index"] = _lap_segments(raw, config.time_reset_tolerance_ms)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
-            samples, flags = _derive_sample_channels(raw, car_metadata, session_id, config)
+            samples, flags = _derive_sample_channels(
+                raw, car_metadata, session_id, config
+            )
         laps = _build_laps(samples, raw, session_id, config)
 
         label = session_label or path.stem
@@ -537,9 +647,13 @@ def load_replay(
             "frame_count": len(samples),
             "lap_count_total": len(laps),
             "lap_count_complete": int(laps["is_complete"].sum()),
-            "session_duration_s": float(samples["timestamp_s"].max()) if len(samples) else 0.0,
+            "session_duration_s": float(samples["timestamp_s"].max())
+            if len(samples)
+            else 0.0,
             "setup_id": setup_id,
             "replay_metadata": car_metadata,
         }
-        results.append(ReplayResult(session_metadata, samples, laps, pd.DataFrame(flags)))
+        results.append(
+            ReplayResult(session_metadata, samples, laps, pd.DataFrame(flags))
+        )
     return results

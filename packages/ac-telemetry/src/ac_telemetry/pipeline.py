@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import shutil
 from pathlib import Path
 from typing import Any
@@ -73,8 +71,14 @@ def preprocess_dataset(
 
     for spec in session_specs:
         replay_path = Path(spec["replay"]).expanduser().resolve()
-        setup_path = Path(spec["setup"]).expanduser().resolve() if spec.get("setup") else None
-        setup_sp_path = Path(spec["setup_sp"]).expanduser().resolve() if spec.get("setup_sp") else None
+        setup_path = (
+            Path(spec["setup"]).expanduser().resolve() if spec.get("setup") else None
+        )
+        setup_sp_path = (
+            Path(spec["setup_sp"]).expanduser().resolve()
+            if spec.get("setup_sp")
+            else None
+        )
         setup_meta, setup_table = parse_setup_bundle(
             setup_path, setup_sp_path, spec.get("setup_label")
         )
@@ -126,11 +130,28 @@ def preprocess_dataset(
     sessions = pd.DataFrame(all_sessions)
     # Store nested replay metadata as JSON-compatible string in the tabular layer.
     if "replay_metadata" in sessions:
-        sessions["replay_metadata"] = sessions["replay_metadata"].map(lambda value: str(value))
-    samples = pd.concat(all_samples, ignore_index=True) if all_samples else pd.DataFrame()
+        sessions["replay_metadata"] = sessions["replay_metadata"].map(
+            lambda value: str(value)
+        )
+    samples = (
+        pd.concat(all_samples, ignore_index=True) if all_samples else pd.DataFrame()
+    )
     laps = pd.concat(all_laps, ignore_index=True) if all_laps else pd.DataFrame()
-    quality = pd.concat(all_quality, ignore_index=True) if all_quality else pd.DataFrame(
-        columns=["severity", "code", "session_id", "lap_id", "sample_start", "sample_end", "message", "affected_channels"]
+    quality = (
+        pd.concat(all_quality, ignore_index=True)
+        if all_quality
+        else pd.DataFrame(
+            columns=[
+                "severity",
+                "code",
+                "session_id",
+                "lap_id",
+                "sample_start",
+                "sample_end",
+                "message",
+                "affected_channels",
+            ]
+        )
     )
     setups = pd.concat(all_setups, ignore_index=True) if all_setups else pd.DataFrame()
 
@@ -147,20 +168,36 @@ def preprocess_dataset(
         }
         for logical, column in count_specs.items():
             table = event_tables.get(logical, pd.DataFrame())
-            counts = table.groupby("lap_id").size() if not table.empty else pd.Series(dtype=int)
+            counts = (
+                table.groupby("lap_id").size()
+                if not table.empty
+                else pd.Series(dtype=int)
+            )
             laps[column] = laps["lap_id"].map(counts).fillna(0).astype(int)
 
         abs_events = event_tables.get("events/abs_activity", pd.DataFrame())
-        active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(abs_events, samples)
-        laps["abs_active_time_s_union"] = laps["lap_id"].map(active_time_by_lap).fillna(0.0)
+        active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(
+            abs_events, samples
+        )
+        laps["abs_active_time_s_union"] = (
+            laps["lap_id"].map(active_time_by_lap).fillna(0.0)
+        )
         laps["abs_active_braking_pct"] = (
-            laps["abs_active_time_s_union"] / laps["braking_time_s"].replace(0, pd.NA) * 100.0
+            laps["abs_active_time_s_union"]
+            / laps["braking_time_s"].replace(0, pd.NA)
+            * 100.0
         ).fillna(0.0)
-        laps["max_abs_activity_score"] = laps["lap_id"].map(max_score_by_lap).fillna(0.0)
+        laps["max_abs_activity_score"] = (
+            laps["lap_id"].map(max_score_by_lap).fillna(0.0)
+        )
 
         tc_events = event_tables.get("events/tc_activity", pd.DataFrame())
-        active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(tc_events, samples)
-        laps["tc_active_time_s_union"] = laps["lap_id"].map(active_time_by_lap).fillna(0.0)
+        active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(
+            tc_events, samples
+        )
+        laps["tc_active_time_s_union"] = (
+            laps["lap_id"].map(active_time_by_lap).fillna(0.0)
+        )
         powered_time_s = laps["full_throttle_time_s"] + laps["partial_throttle_time_s"]
         laps["tc_active_throttle_pct"] = (
             laps["tc_active_time_s_union"] / powered_time_s.replace(0, pd.NA) * 100.0
@@ -206,7 +243,9 @@ def preprocess_dataset(
         "segment_definition_source": str(segment_path) if segment_path else None,
         "tables": table_manifest(refs),
         "warnings": [
-            "Parquet unavailable; CSV fallback used" if storage.format == "csv" else None,
+            "Parquet unavailable; CSV fallback used"
+            if storage.format == "csv"
+            else None,
             "Native AC normalized spline position is not present in parsed replay data",
             "ABS activity events are spectral candidates; observed frequencies may be aliased by the replay sample rate",
             "TC activity events are rear-wheel spectral candidates; drivetrain metadata and direct torque cut are unavailable",

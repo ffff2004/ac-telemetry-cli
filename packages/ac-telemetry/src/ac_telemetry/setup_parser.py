@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import configparser
 from pathlib import Path
 from typing import Any
@@ -7,7 +5,6 @@ from typing import Any
 import pandas as pd
 
 from .util import sha256_file, stable_id
-
 
 CATEGORY_PREFIXES: tuple[tuple[str, str], ...] = (
     ("WING", "aero"),
@@ -53,7 +50,9 @@ def _category(section: str) -> str:
     return "other"
 
 
-def parse_setup_file(path: Path, setup_label: str | None = None) -> tuple[dict[str, Any], pd.DataFrame]:
+def parse_setup_file(
+    path: Path, setup_label: str | None = None
+) -> tuple[dict[str, Any], pd.DataFrame]:
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     parser.optionxform = str
     parser.read(path, encoding="utf-8-sig")
@@ -76,7 +75,9 @@ def parse_setup_file(path: Path, setup_label: str | None = None) -> tuple[dict[s
                     "section": section,
                     "parameter": key,
                     "raw_value": value,
-                    "value_numeric": parsed if isinstance(parsed, (int, float)) else None,
+                    "value_numeric": parsed
+                    if isinstance(parsed, (int, float))
+                    else None,
                     "value_text": str(parsed),
                     "category": _category(section),
                 }
@@ -140,20 +141,28 @@ def build_setup_diffs(table: pd.DataFrame) -> pd.DataFrame:
                 comp_num = comp_row["value_numeric"] if comp_row is not None else None
                 absolute = (
                     float(comp_num) - float(base_num)
-                    if pd.notna(base_num) and pd.notna(comp_num)
+                    if bool(pd.notna(base_num)) and bool(pd.notna(comp_num))
                     else None
                 )
+                if comp_row is not None:
+                    category = comp_row["category"]
+                elif base_row is not None:
+                    category = base_row["category"]
+                else:
+                    continue
                 rows.append(
                     {
                         "base_setup_id": base_id,
                         "comparison_setup_id": comparison_id,
                         "section": key[0],
                         "parameter": key[1],
-                        "category": (
-                            comp_row["category"] if comp_row is not None else base_row["category"]
-                        ),
-                        "base_value": base_row["value_text"] if base_row is not None else None,
-                        "comparison_value": comp_row["value_text"] if comp_row is not None else None,
+                        "category": category,
+                        "base_value": base_row["value_text"]
+                        if base_row is not None
+                        else None,
+                        "comparison_value": comp_row["value_text"]
+                        if comp_row is not None
+                        else None,
                         "absolute_numeric_change": absolute,
                         "values_equal": (
                             str(base_row["value_text"]) == str(comp_row["value_text"])
