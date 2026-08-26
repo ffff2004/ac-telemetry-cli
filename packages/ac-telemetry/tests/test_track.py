@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from ac_telemetry.config import ProcessingConfig
-from ac_telemetry.track import TrackModel
+from ac_telemetry.track import (
+    _CANDIDATE_CHUNK_SIZE,
+    TrackModel,
+    _candidate_chunk_ranges,
+)
 from track_fixture import make_track, write_ai
 
 
@@ -524,7 +528,15 @@ def test_projection_matches_oracle_across_radius_query_chunks(
         (float(100.0 * np.cos(value)), 0.0, float(100.0 * np.sin(value)))
         for value in phase
     ]
-    query_positions = [(0.0, 0.0, 0.0)] * 8_193
+    unique_queries = [
+        (0.0, 0.0, 0.0),
+        (0.25, 0.0, 0.0),
+        (0.0, 0.0, 0.25),
+        (-0.25, 0.0, 0.0),
+    ]
+    query_positions = [
+        unique_queries[index % len(unique_queries)] for index in range(8_193)
+    ]
     track = _load_spline(tmp_path, reference_points)
 
     aligned = track.align(_samples(query_positions), ProcessingConfig())
@@ -532,17 +544,6 @@ def test_projection_matches_oracle_across_radius_query_chunks(
         tuple(np.asarray(point, dtype=np.float32).astype(float))
         for point in reference_points
     ]
-    (
-        expected_index,
-        expected_fraction,
-        expected_projection,
-        expected_distance,
-        expected_s,
-    ) = _brute_force_projection(
-        canonical_reference_points,
-        query_positions[0],
-        closed=bool(track.metadata["reference_closed"]),
-    )
     fields = [
         "track_reference_index",
         "track_reference_fraction",
@@ -552,14 +553,47 @@ def test_projection_matches_oracle_across_radius_query_chunks(
         "track_projection_distance_3d_m",
         "track_s_m",
     ]
-    expected = np.tile(
-        [
+    expected_by_query = {}
+    for position in unique_queries:
+        (
+            expected_index,
+            expected_fraction,
+            expected_projection,
+            expected_distance,
+            expected_s,
+        ) = _brute_force_projection(
+            canonical_reference_points,
+            position,
+            closed=bool(track.metadata["reference_closed"]),
+        )
+        expected_by_query[position] = [
             expected_index,
             expected_fraction,
             *expected_projection,
             expected_distance,
             expected_s,
-        ],
-        (len(query_positions), 1),
+        ]
+    expected = np.asarray(
+        [expected_by_query[position] for position in query_positions], dtype=float
     )
     np.testing.assert_allclose(aligned[fields].to_numpy(float), expected, atol=1e-8)
+
+
+@pytest.mark.parametrize(
+    ("estimated_candidates", "expected_chunks"),
+    [
+        ([100, 200], [(0, 2)]),
+        ([_CANDIDATE_CHUNK_SIZE], [(0, 1)]),
+        ([_CANDIDATE_CHUNK_SIZE - 10, 10, 1], [(0, 2), (2, 3)]),
+        ([100_000, 100_000, 100_000], [(0, 2), (2, 3)]),
+        ([_CANDIDATE_CHUNK_SIZE + 1, 10_000, 10_000], [(0, 1), (1, 3)]),
+        (
+            [_CANDIDATE_CHUNK_SIZE + 1, _CANDIDATE_CHUNK_SIZE + 2],
+            [(0, 1), (1, 2)],
+        ),
+    ],
+)
+def test_candidate_chunk_ranges_respect_candidate_budget(
+    estimated_candidates: list[int], expected_chunks: list[tuple[int, int]]
+) -> None:
+    assert _candidate_chunk_ranges(np.asarray(estimated_candidates)) == expected_chunks

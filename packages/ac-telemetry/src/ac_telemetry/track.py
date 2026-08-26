@@ -304,25 +304,31 @@ def _project_seed_distances(
     return distances
 
 
-def _candidate_chunk_ranges(
-    radius_counts: np.ndarray, row_count: int
-) -> list[tuple[int, int]]:
-    """Split ragged candidates by the radius-vertex budget."""
-    if row_count == 0:
+def _candidate_chunk_ranges(estimated_candidates: np.ndarray) -> list[tuple[int, int]]:
+    """Greedily split rows while keeping estimated candidate work in budget.
+
+    A row larger than the budget is emitted alone; its candidates are never
+    truncated.
+    """
+    if not len(estimated_candidates):
         return []
-    cumulative = np.cumsum(radius_counts, dtype=np.int64)
-    targets = np.arange(_CANDIDATE_CHUNK_SIZE, cumulative[-1], _CANDIDATE_CHUNK_SIZE)
-    starts = np.searchsorted(cumulative, targets, side="right")
-    starts = np.unique(
-        np.concatenate(
-            (
-                np.array([0], dtype=np.intp),
-                starts,
-            )
-        )
-    )
-    stops = np.r_[starts[1:], row_count]
-    return list(zip(starts.tolist(), stops.tolist(), strict=True))
+    chunks: list[tuple[int, int]] = []
+    row_start = 0
+    chunk_candidates = 0
+    for row, candidate_count in enumerate(estimated_candidates):
+        candidate_count = int(candidate_count)
+        if candidate_count < 0:
+            raise ValueError("estimated candidate counts must be non-negative")
+        if (
+            row > row_start
+            and chunk_candidates + candidate_count > _CANDIDATE_CHUNK_SIZE
+        ):
+            chunks.append((row_start, row))
+            row_start = row
+            chunk_candidates = 0
+        chunk_candidates += candidate_count
+    chunks.append((row_start, len(estimated_candidates)))
+    return chunks
 
 
 def _project_candidate_batch(
@@ -384,6 +390,7 @@ def _project_track_points(
     s_m = np.zeros(n, dtype=float)
     vertex_indices = _query_global_vertices(spline, points)
     seed_segments, seed_valid = _seed_segment_candidates(spline, vertex_indices)
+    seed_counts = seed_valid.sum(axis=1, dtype=np.intp)
     seed_distances = _project_seed_distances(spline, points, seed_segments, seed_valid)
 
     # A segment whose exact distance is no greater than the seed distance has an
@@ -405,10 +412,15 @@ def _project_track_points(
             f"expected {n}, got {len(radius_counts)}"
         )
 
+    # A radius vertex contributes at most two incident segments. Include the
+    # fixed-width seed candidates in the estimate so exact projection work stays
+    # within the same budget used to bound the chunk-local ragged query.
+    estimated_candidates = seed_counts + 2 * radius_counts
+
     # Counts are cheap to retain for the whole batch. The actual ragged query is
     # deliberately inside this loop so a dense radius cannot allocate lists for
     # every sample at once.
-    for row_start, row_stop in _candidate_chunk_ranges(radius_counts, n):
+    for row_start, row_stop in _candidate_chunk_ranges(estimated_candidates):
         nearby_vertices = spline.point_tree.query_ball_point(
             points[row_start:row_stop],
             radii[row_start:row_stop],
@@ -416,8 +428,8 @@ def _project_track_points(
         )
         row_count = row_stop - row_start
         seed_valid_chunk = seed_valid[row_start:row_stop]
-        seed_counts = seed_valid_chunk.sum(axis=1, dtype=np.intp)
-        seed_rows = np.repeat(np.arange(row_count, dtype=np.intp), seed_counts)
+        seed_counts_chunk = seed_counts[row_start:row_stop]
+        seed_rows = np.repeat(np.arange(row_count, dtype=np.intp), seed_counts_chunk)
         seed_indices = seed_segments[row_start:row_stop][seed_valid_chunk]
 
         radius_count = int(radius_counts[row_start:row_stop].sum())
