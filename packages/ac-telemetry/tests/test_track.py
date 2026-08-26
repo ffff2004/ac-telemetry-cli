@@ -514,3 +514,52 @@ def test_projection_is_batch_and_order_independent(tmp_path: Path) -> None:
         restored[fields].to_numpy(float),
         atol=1e-8,
     )
+
+
+def test_projection_matches_oracle_across_radius_query_chunks(
+    tmp_path: Path,
+) -> None:
+    phase = np.linspace(0.0, 2.0 * np.pi, 500, endpoint=False)
+    reference_points = [
+        (float(100.0 * np.cos(value)), 0.0, float(100.0 * np.sin(value)))
+        for value in phase
+    ]
+    query_positions = [(0.0, 0.0, 0.0)] * 8_193
+    track = _load_spline(tmp_path, reference_points)
+
+    aligned = track.align(_samples(query_positions), ProcessingConfig())
+    canonical_reference_points = [
+        tuple(np.asarray(point, dtype=np.float32).astype(float))
+        for point in reference_points
+    ]
+    (
+        expected_index,
+        expected_fraction,
+        expected_projection,
+        expected_distance,
+        expected_s,
+    ) = _brute_force_projection(
+        canonical_reference_points,
+        query_positions[0],
+        closed=bool(track.metadata["reference_closed"]),
+    )
+    fields = [
+        "track_reference_index",
+        "track_reference_fraction",
+        "track_projection_x",
+        "track_projection_y",
+        "track_projection_z",
+        "track_projection_distance_3d_m",
+        "track_s_m",
+    ]
+    expected = np.tile(
+        [
+            expected_index,
+            expected_fraction,
+            *expected_projection,
+            expected_distance,
+            expected_s,
+        ],
+        (len(query_positions), 1),
+    )
+    np.testing.assert_allclose(aligned[fields].to_numpy(float), expected, atol=1e-8)

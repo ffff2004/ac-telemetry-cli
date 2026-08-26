@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import configparser
 import json
 import struct
@@ -43,6 +41,8 @@ _AI_PAYLOAD_FIELDS = (
     "ai_tag",
     "ai_grade",
 )
+_PROJECTION_CHUNK_SIZE = 8_192
+_CANDIDATE_CHUNK_SIZE = 262_144
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +57,7 @@ class _Spline:
     segment_start: np.ndarray
     segment_vector: np.ndarray
     segment_length_m: np.ndarray
+    segment_length_squared: np.ndarray
     tangent: np.ndarray
     horizontal_tangent: np.ndarray
     left_normal: np.ndarray
@@ -138,6 +139,7 @@ def _parse_ai_spline(path: Path) -> _Spline:
     ends = np.roll(points, -1, axis=0) if closed else points[1:]
     vectors = ends - starts
     lengths = np.linalg.norm(vectors, axis=1)
+    length_squared = np.einsum("ij,ij->i", vectors, vectors)
     valid = lengths > 1e-9
     if not bool(valid.all()):
         # Duplicate points are legal enough to tolerate, but they cannot define a useful
@@ -183,6 +185,7 @@ def _parse_ai_spline(path: Path) -> _Spline:
         segment_start=starts,
         segment_vector=vectors,
         segment_length_m=lengths,
+        segment_length_squared=length_squared,
         tangent=tangent,
         horizontal_tangent=horizontal,
         left_normal=left,
@@ -234,35 +237,6 @@ def _wrap_angle(values: np.ndarray) -> np.ndarray:
     return (values + np.pi) % (2 * np.pi) - np.pi
 
 
-def _project_candidate_segments(
-    spline: _Spline, point: np.ndarray, indices: np.ndarray
-) -> tuple[int, float, np.ndarray, float]:
-    starts = spline.segment_start[indices]
-    vectors = spline.segment_vector[indices]
-    denom = np.einsum("ij,ij->i", vectors, vectors)
-    rel = point - starts
-    t = np.divide(
-        np.einsum("ij,ij->i", rel, vectors),
-        denom,
-        out=np.zeros(len(indices), dtype=float),
-        where=denom > 1e-12,
-    )
-    t = np.clip(t, 0.0, 1.0)
-    projected = starts + vectors * t[:, None]
-    d2 = np.einsum("ij,ij->i", point - projected, point - projected)
-    best = int(np.argmin(d2))
-    return int(indices[best]), float(t[best]), projected[best], float(np.sqrt(d2[best]))
-
-
-def _incident_segments(spline: _Spline, vertex_indices: np.ndarray) -> np.ndarray:
-    candidates = np.concatenate((vertex_indices - 1, vertex_indices))
-    if spline.closed:
-        candidates %= spline.segment_count
-    else:
-        candidates = candidates[(candidates >= 0) & (candidates < spline.segment_count)]
-    return np.unique(candidates)
-
-
 def _query_global_vertices(spline: _Spline, points: np.ndarray) -> np.ndarray:
     vertex_count = len(spline.points)
     k = min(8, vertex_count)
@@ -277,6 +251,127 @@ def _query_global_vertices(spline: _Spline, points: np.ndarray) -> np.ndarray:
     return vertex_indices
 
 
+def _seed_segment_candidates(
+    spline: _Spline, vertex_indices: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build sorted fixed-width incident-segment candidates for every point.
+
+    The previous implementation built and deduplicated this topology one row at
+    a time.  A sorted candidate matrix gives the same lowest-index tie-breaking
+    order while allowing the geometric calculation to run in array chunks.  An
+    out-of-range sentinel keeps open-spline endpoint candidates in the same
+    fixed-width layout without ever projecting them.
+    """
+    candidates = np.concatenate((vertex_indices - 1, vertex_indices), axis=1)
+    if spline.closed:
+        candidates %= spline.segment_count
+        valid = np.ones(candidates.shape, dtype=bool)
+    else:
+        valid = (candidates >= 0) & (candidates < spline.segment_count)
+        candidates = np.where(valid, candidates, spline.segment_count)
+    candidates.sort(axis=1)
+    return candidates, candidates < spline.segment_count
+
+
+def _project_seed_distances(
+    spline: _Spline,
+    points: np.ndarray,
+    candidates: np.ndarray,
+    valid: np.ndarray,
+) -> np.ndarray:
+    """Return exact distances to the fixed-width seed candidates in chunks."""
+    distances = np.empty(len(points), dtype=float)
+    for start in range(0, len(points), _PROJECTION_CHUNK_SIZE):
+        stop = min(start + _PROJECTION_CHUNK_SIZE, len(points))
+        indices = candidates[start:stop]
+        safe_indices = np.minimum(indices, spline.segment_count - 1)
+        starts = spline.segment_start[safe_indices]
+        vectors = spline.segment_vector[safe_indices]
+        denom = spline.segment_length_squared[safe_indices]
+        rel = points[start:stop, None, :] - starts
+        fraction = np.divide(
+            np.einsum("ijk,ijk->ij", rel, vectors),
+            denom,
+            out=np.zeros_like(denom),
+            where=denom > 1e-12,
+        )
+        fraction = np.clip(fraction, 0.0, 1.0)
+        projected = starts + vectors * fraction[..., None]
+        delta = points[start:stop, None, :] - projected
+        distance_squared = np.einsum("ijk,ijk->ij", delta, delta)
+        distance_squared = np.where(valid[start:stop], distance_squared, np.inf)
+        distances[start:stop] = np.sqrt(np.min(distance_squared, axis=1))
+    return distances
+
+
+def _candidate_chunk_ranges(
+    radius_counts: np.ndarray, row_count: int
+) -> list[tuple[int, int]]:
+    """Split ragged candidates by the radius-vertex budget."""
+    if row_count == 0:
+        return []
+    cumulative = np.cumsum(radius_counts, dtype=np.int64)
+    targets = np.arange(_CANDIDATE_CHUNK_SIZE, cumulative[-1], _CANDIDATE_CHUNK_SIZE)
+    starts = np.searchsorted(cumulative, targets, side="right")
+    starts = np.unique(
+        np.concatenate(
+            (
+                np.array([0], dtype=np.intp),
+                starts,
+            )
+        )
+    )
+    stops = np.r_[starts[1:], row_count]
+    return list(zip(starts.tolist(), stops.tolist(), strict=True))
+
+
+def _project_candidate_batch(
+    spline: _Spline,
+    points: np.ndarray,
+    rows: np.ndarray,
+    indices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Project sorted, deduplicated ragged candidates and reduce by row."""
+    order = np.lexsort((indices, rows))
+    rows = rows[order]
+    indices = indices[order]
+    keep = np.r_[True, (rows[1:] != rows[:-1]) | (indices[1:] != indices[:-1])]
+    rows = rows[keep]
+    indices = indices[keep]
+
+    starts = spline.segment_start[indices]
+    vectors = spline.segment_vector[indices]
+    denom = spline.segment_length_squared[indices]
+    rel = points[rows] - starts
+    fraction = np.divide(
+        np.einsum("ij,ij->i", rel, vectors),
+        denom,
+        out=np.zeros(len(indices), dtype=float),
+        where=denom > 1e-12,
+    )
+    fraction = np.clip(fraction, 0.0, 1.0)
+    projected = starts + vectors * fraction[:, None]
+    delta = points[rows] - projected
+    distance_squared = np.einsum("ij,ij->i", delta, delta)
+
+    row_starts = np.r_[0, np.flatnonzero(rows[1:] != rows[:-1]) + 1]
+    row_counts = np.diff(np.r_[row_starts, len(rows)])
+    minimum = np.minimum.reduceat(distance_squared, row_starts)
+    best = distance_squared == np.repeat(minimum, row_counts)
+    best_candidates = np.flatnonzero(best)
+    first_best = np.r_[
+        True,
+        rows[best_candidates[1:]] != rows[best_candidates[:-1]],
+    ]
+    best_positions = best_candidates[first_best]
+    return (
+        indices[best_positions],
+        fraction[best_positions],
+        projected[best_positions],
+        np.sqrt(minimum),
+    )
+
+
 def _project_track_points(
     spline: _Spline,
     points: np.ndarray,
@@ -288,34 +383,95 @@ def _project_track_points(
     distance = np.zeros(n, dtype=float)
     s_m = np.zeros(n, dtype=float)
     vertex_indices = _query_global_vertices(spline, points)
-    seed_distances = np.zeros(n, dtype=float)
-    seed_segments: list[np.ndarray] = []
-    for row, point in enumerate(points):
-        indices = _incident_segments(spline, vertex_indices[row])
-        seed_segments.append(indices)
-        seed_distances[row] = _project_candidate_segments(spline, point, indices)[3]
+    seed_segments, seed_valid = _seed_segment_candidates(spline, vertex_indices)
+    seed_distances = _project_seed_distances(spline, points, seed_segments, seed_valid)
 
     # A segment whose exact distance is no greater than the seed distance has an
     # endpoint within seed_distance + segment_length. Using the longest segment
     # makes the radius query a complete candidate filter, not a distance heuristic.
     radii = seed_distances + float(np.max(spline.segment_length_m))
-    nearby_vertices = spline.point_tree.query_ball_point(
-        points,
-        radii,
-        workers=-1,
-    )
-    for row, point in enumerate(points):
-        radius_segments = _incident_segments(
-            spline, np.asarray(nearby_vertices[row], dtype=np.intp)
+    radius_counts = np.asarray(
+        spline.point_tree.query_ball_point(
+            points,
+            radii,
+            workers=-1,
+            return_length=True,
+        ),
+        dtype=np.intp,
+    ).reshape(-1)
+    if len(radius_counts) != n:
+        raise RuntimeError(
+            "cKDTree returned an unexpected radius-count shape: "
+            f"expected {n}, got {len(radius_counts)}"
         )
-        indices = np.unique(np.concatenate((seed_segments[row], radius_segments)))
-        best, t, projected, error = _project_candidate_segments(spline, point, indices)
-        segment_index[row] = best
-        fraction[row] = t
-        projection[row] = projected
-        distance[row] = error
-        s = float(spline.distance_m[best] + t * spline.segment_length_m[best])
-        s_m[row] = s % spline.total_length_m if spline.closed else s
+
+    # Counts are cheap to retain for the whole batch. The actual ragged query is
+    # deliberately inside this loop so a dense radius cannot allocate lists for
+    # every sample at once.
+    for row_start, row_stop in _candidate_chunk_ranges(radius_counts, n):
+        nearby_vertices = spline.point_tree.query_ball_point(
+            points[row_start:row_stop],
+            radii[row_start:row_stop],
+            workers=-1,
+        )
+        row_count = row_stop - row_start
+        seed_valid_chunk = seed_valid[row_start:row_stop]
+        seed_counts = seed_valid_chunk.sum(axis=1, dtype=np.intp)
+        seed_rows = np.repeat(np.arange(row_count, dtype=np.intp), seed_counts)
+        seed_indices = seed_segments[row_start:row_stop][seed_valid_chunk]
+
+        radius_count = int(radius_counts[row_start:row_stop].sum())
+        radius_vertices: np.ndarray | None = None
+        radius_rows: np.ndarray | None = None
+        radius_indices: np.ndarray | None = None
+        if radius_count:
+            radius_vertices = np.concatenate(nearby_vertices)
+            radius_rows = np.repeat(
+                np.arange(row_count, dtype=np.intp),
+                radius_counts[row_start:row_stop],
+            )
+            radius_indices = np.empty(radius_count * 2, dtype=np.intp)
+            radius_indices[0::2] = radius_vertices - 1
+            radius_indices[1::2] = radius_vertices
+            radius_rows = np.repeat(radius_rows, 2)
+            if spline.closed:
+                radius_indices %= spline.segment_count
+            else:
+                radius_valid = (radius_indices >= 0) & (
+                    radius_indices < spline.segment_count
+                )
+                radius_indices = radius_indices[radius_valid]
+                radius_rows = radius_rows[radius_valid]
+            candidate_rows = np.concatenate((seed_rows, radius_rows))
+            candidate_indices = np.concatenate((seed_indices, radius_indices))
+        else:
+            candidate_rows = seed_rows
+            candidate_indices = seed_indices
+
+        index, fraction_chunk, projected_chunk, distance_chunk = (
+            _project_candidate_batch(
+                spline,
+                points[row_start:row_stop],
+                candidate_rows,
+                candidate_indices,
+            )
+        )
+        segment_index[row_start:row_stop] = index
+        fraction[row_start:row_stop] = fraction_chunk
+        projection[row_start:row_stop] = projected_chunk
+        distance[row_start:row_stop] = distance_chunk
+        s_m[row_start:row_stop] = (
+            spline.distance_m[index] + fraction_chunk * spline.segment_length_m[index]
+        )
+        if spline.closed:
+            s_m[row_start:row_stop] %= spline.total_length_m
+
+        # Release the ragged query and its expanded candidate arrays before the
+        # next chunk's query is materialized.
+        del nearby_vertices
+        del candidate_rows, candidate_indices, seed_rows, seed_indices
+        if radius_count:
+            del radius_vertices, radius_rows, radius_indices
     return segment_index, fraction, projection, distance, s_m
 
 
