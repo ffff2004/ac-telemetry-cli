@@ -5,8 +5,6 @@ an output directory to :func:`merge_datasets`.  All compatibility checks happen
 before the output is touched; writing occurs in a sibling staging directory.
 """
 
-from __future__ import annotations
-
 import json
 import math
 import os
