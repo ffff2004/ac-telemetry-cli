@@ -6,14 +6,16 @@
       "setup": "/path/to/a.ini",
       "setup_sp": "/path/to/a.sp",
       "setup_label": "default",
-      "session_label": "2026-06-03 default"
+      "session_label": "2026-06-03 default",
+      "driven_wheels": ["rl", "rr"]
     },
     {
       "replay": "/path/to/AC_300726-155603_O_ks_ferrari_f2004_spa_.acreplay",
       "setup": "/path/to/gear+aero.ini",
       "setup_sp": "/path/to/gear+aero.sp",
       "setup_label": "long-gearing-low-wing",
-      "session_label": "2026-07-30 low drag"
+      "session_label": "2026-07-30 low drag",
+      "driven_wheels": ["rl", "rr"]
     }
   ]
 }

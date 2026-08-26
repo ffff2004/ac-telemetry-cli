@@ -338,17 +338,6 @@ def _derive_sample_channels(
         axis=1, min_count=1
     )
 
-    df["is_front_lock_candidate"] = (
-        df["is_braking"]
-        & (df["speed_kmh"] >= config.lockup_minimum_speed_kmh)
-        & (df["front_slip_ratio_min"] <= config.lockup_slip_ratio_threshold)
-    )
-    df["is_rear_wheelspin_candidate"] = (
-        (df["throttle"] >= config.wheelspin_minimum_throttle)
-        & (df["speed_kmh"] >= config.wheelspin_minimum_speed_kmh)
-        & (df["rear_slip_ratio_max"] >= config.wheelspin_slip_ratio_threshold)
-    )
-
     # No pit-lane or track-valid channel exists in this replay export. Unknown is not False.
     df["is_in_pit"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
     df["is_off_track_candidate"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
@@ -427,8 +416,6 @@ def _derive_sample_channels(
             "is_braking",
             "is_coasting",
             "is_brake_throttle_overlap",
-            "is_front_lock_candidate",
-            "is_rear_wheelspin_candidate",
             "is_in_pit",
             "is_off_track_candidate",
             "is_valid_sample",
@@ -530,12 +517,6 @@ def _build_laps(
             "coasting_pct": 100.0 * float(moving["is_coasting"].sum()) / denominator,
             "overlap_time_s": float(
                 g.loc[g["is_brake_throttle_overlap"], "dt_s"].sum()
-            ),
-            "front_lock_time_s": float(
-                g.loc[g["is_front_lock_candidate"], "dt_s"].sum()
-            ),
-            "rear_wheelspin_time_s": float(
-                g.loc[g["is_rear_wheelspin_candidate"], "dt_s"].sum()
             ),
             "front_slip_integral": float(
                 (g["front_slip_ratio_min"].clip(upper=0).abs() * g["dt_s"]).sum()

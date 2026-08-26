@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -37,11 +38,11 @@ from .util import close_short_false_gaps, contiguous_true_runs, stable_id
 # the driver's throttle input. No labelled TC experiment has calibrated a
 # universal band, so the default 15-32 Hz is provisional and configurable. The
 # detector imposes no positive-slip trigger threshold: sustained wheelspin alone
-# is not evidence of feedback intervention. Only rear wheels are considered
-# because replay metadata does not expose the driven axle.
+# is not evidence of feedback intervention. Known vehicle profiles restrict TC
+# analysis to driven wheels; unknown profiles preserve four-wheel candidates.
 
 _ABS_WHEELS = ("fl", "fr", "rl", "rr")
-_TC_WHEELS = ("rl", "rr")
+_TC_WHEELS = _ABS_WHEELS
 _OPPOSITE_WHEEL = {"fl": "fr", "fr": "fl", "rl": "rr", "rr": "rl"}
 
 _ABS_COLUMNS = [
@@ -90,6 +91,7 @@ _TC_COLUMNS = [
     "event_type",
     "detection_method",
     "wheel",
+    "driven_status",
     "start_sample",
     "end_sample",
     "start_time_s",
@@ -599,6 +601,7 @@ def _quality_flags(
     window_samples: int,
     event_samples: int,
     spec: _ActivitySpec,
+    driven_status: str | None = None,
 ) -> str:
     flags: list[str] = []
     peaks = [
@@ -616,8 +619,8 @@ def _quality_flags(
             if spec.kind == "abs"
             else "no_non_throttle_noise_baseline"
         )
-    if spec.kind == "tc":
-        flags.append("rear_drive_assumption")
+    if spec.kind == "tc" and driven_status == "unknown":
+        flags.append("unknown_drivetrain")
     return ";".join(flags)
 
 
@@ -631,6 +634,7 @@ def _event_row(
     sample_rate_hz: float,
     window_samples: int,
     spec: _ActivitySpec,
+    driven_status: str | None = None,
 ) -> dict[str, Any]:
     event_segment = segment.iloc[start : end + 1]
     slip = event_segment[f"wheel_{wheel}_slip_ratio"].to_numpy(float)
@@ -692,7 +696,12 @@ def _event_row(
         "activity_score": mean_score,
         "confidence": float(np.clip(mean_score * alias_penalty, 0.0, 1.0)),
         "quality_flags": _quality_flags(
-            evidence, sample_rate_hz, window_samples, len(event_segment), spec
+            evidence,
+            sample_rate_hz,
+            window_samples,
+            len(event_segment),
+            spec,
+            driven_status,
         ),
     }
     control_fraction = float(
@@ -710,6 +719,7 @@ def _event_row(
     else:
         row.update(
             {
+                "driven_status": driven_status,
                 "mean_throttle": float(event_segment["throttle"].mean()),
                 "peak_throttle": float(event_segment["throttle"].max()),
                 "mean_brake": float(event_segment["brake_n"].mean()),
@@ -725,6 +735,7 @@ def _detect_activity(
     parent_events: pd.DataFrame,
     config: ProcessingConfig,
     spec: _ActivitySpec,
+    driven_wheels_by_session: Mapping[str, frozenset[str] | None] | None = None,
 ) -> pd.DataFrame:
     if samples.empty or parent_events.empty:
         return pd.DataFrame(columns=spec.columns)
@@ -737,6 +748,7 @@ def _detect_activity(
             "sample_index"
         ).reset_index(drop=True)
     for parent_event in parent_events.itertuples(index=False):
+        session_id = str(parent_event.session_id)
         lap_samples = sample_groups.get(
             (str(parent_event.session_id), str(parent_event.lap_id))
         )
@@ -769,7 +781,22 @@ def _detect_activity(
             spec,
             config,
         )
-        for wheel in spec.wheels:
+        known_driven_wheels = (
+            driven_wheels_by_session.get(session_id)
+            if driven_wheels_by_session is not None
+            else None
+        )
+        wheels = (
+            tuple(wheel for wheel in spec.wheels if wheel in known_driven_wheels)
+            if spec.kind == "tc" and known_driven_wheels is not None
+            else spec.wheels
+        )
+        driven_status = (
+            "driven"
+            if spec.kind == "tc" and known_driven_wheels is not None
+            else ("unknown" if spec.kind == "tc" else None)
+        )
+        for wheel in wheels:
             required = [
                 f"wheel_{wheel}_slip_ratio",
                 f"wheel_{_OPPOSITE_WHEEL[wheel]}_slip_ratio",
@@ -825,6 +852,7 @@ def _detect_activity(
                         sample_rate_hz,
                         window_samples,
                         spec,
+                        driven_status,
                     )
                 )
     return pd.DataFrame(rows, columns=spec.columns)
@@ -843,6 +871,13 @@ def detect_tc_activity(
     samples: pd.DataFrame,
     throttle_events: pd.DataFrame,
     config: ProcessingConfig,
+    driven_wheels_by_session: Mapping[str, frozenset[str] | None] | None = None,
 ) -> pd.DataFrame:
-    """Detect per-rear-wheel spectral TC activity inside throttle events."""
-    return _detect_activity(samples, throttle_events, config, _tc_spec(config))
+    """Detect spectral TC activity on known or potentially driven wheels."""
+    return _detect_activity(
+        samples,
+        throttle_events,
+        config,
+        _tc_spec(config),
+        driven_wheels_by_session,
+    )

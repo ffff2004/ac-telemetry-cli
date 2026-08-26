@@ -2,7 +2,7 @@ from typing import Any
 
 from .storage import TableRef
 
-DATASET_SCHEMA_VERSION = "3"
+DATASET_SCHEMA_VERSION = "4"
 
 
 def table_manifest(refs: list[TableRef]) -> dict[str, dict[str, Any]]:

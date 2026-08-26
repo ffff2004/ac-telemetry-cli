@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from ac_telemetry.assist_activity import detect_tc_activity
 from ac_telemetry.config import ProcessingConfig
 from ac_telemetry.events import detect_throttle
@@ -12,11 +13,15 @@ def _fixture(
     rr: np.ndarray,
     throttle: np.ndarray | None = None,
     brake: np.ndarray | None = None,
+    fl: np.ndarray | None = None,
+    fr: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     count = len(rl)
     time = np.arange(count) * DT
     throttle_values = np.full(count, 0.9) if throttle is None else throttle
     brake_values = np.zeros(count) if brake is None else brake
+    fl_values = np.zeros(count) if fl is None else fl
+    fr_values = np.zeros(count) if fr is None else fr
     samples = pd.DataFrame(
         {
             "sample_index": np.arange(count),
@@ -33,8 +38,12 @@ def _fixture(
             "steerAngle": np.zeros(count),
             "yaw_rate_rad_s": np.zeros(count),
             "rear_slip_ratio_max": np.maximum(rl, rr),
+            "wheel_fl_slip_ratio": fl_values,
+            "wheel_fr_slip_ratio": fr_values,
             "wheel_rl_slip_ratio": rl,
             "wheel_rr_slip_ratio": rr,
+            "wheel_fl_load": np.full(count, 3000.0),
+            "wheel_fr_load": np.full(count, 3000.0),
             "wheel_rl_load": np.full(count, 3000.0),
             "wheel_rr_load": np.full(count, 3000.0),
         }
@@ -59,12 +68,53 @@ def test_detects_rear_wheel_high_frequency_activity_without_slip_threshold() -> 
     rr = 0.01 + 0.020 * np.sin(2 * np.pi * 19 * time + 1.0)
     samples, throttle_events = _fixture(rl, rr)
 
-    events = detect_tc_activity(samples, throttle_events, ProcessingConfig())
+    events = detect_tc_activity(
+        samples,
+        throttle_events,
+        ProcessingConfig(),
+        {"session": frozenset({"rl", "rr"})},
+    )
 
     assert set(events["wheel"]) == {"rl", "rr"}
     assert set(events["event_type"]) == {"tc_intervention_candidate"}
     assert (events["high_band_power_fraction"] > 0.80).all()
     assert (events["parent_throttle_event_id"] == "throttle-event").all()
+    assert set(events["driven_status"]) == {"driven"}
+    assert not events["quality_flags"].str.contains("unknown_drivetrain").any()
+
+
+@pytest.mark.parametrize(
+    ("driven_wheels", "expected_wheels", "expected_status"),
+    [
+        (frozenset({"fl", "fr"}), {"fl", "fr"}, "driven"),
+        (frozenset({"rl", "rr"}), {"rl", "rr"}, "driven"),
+        (frozenset({"fl", "fr", "rl", "rr"}), {"fl", "fr", "rl", "rr"}, "driven"),
+        (None, {"fl", "fr", "rl", "rr"}, "unknown"),
+    ],
+)
+def test_selects_tc_wheels_from_session_drivetrain(
+    driven_wheels: frozenset[str] | None,
+    expected_wheels: set[str],
+    expected_status: str,
+) -> None:
+    time = np.arange(267) * DT
+    left = -0.01 + 0.025 * np.sin(2 * np.pi * 23 * time)
+    right = 0.01 + 0.020 * np.sin(2 * np.pi * 19 * time + 1.0)
+    samples, throttle_events = _fixture(left, right, fl=left, fr=right)
+
+    events = detect_tc_activity(
+        samples,
+        throttle_events,
+        ProcessingConfig(),
+        {"session": driven_wheels},
+    )
+
+    assert set(events["wheel"]) == expected_wheels
+    assert set(events["driven_status"]) == {expected_status}
+    has_unknown_flag = bool(
+        events["quality_flags"].str.contains("unknown_drivetrain").all()
+    )
+    assert has_unknown_flag == (expected_status == "unknown")
 
 
 def test_does_not_detect_smooth_acceleration_or_sustained_wheelspin() -> None:

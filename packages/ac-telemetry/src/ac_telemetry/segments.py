@@ -126,14 +126,6 @@ def segment_passes(
                     "partial_throttle_time_s": float(
                         segment.loc[segment["is_partial_throttle"], "dt_s"].sum()
                     ),
-                    "front_lock_time_s": float(
-                        segment.loc[segment["is_front_lock_candidate"], "dt_s"].sum()
-                    ),
-                    "rear_wheelspin_time_s": float(
-                        segment.loc[
-                            segment["is_rear_wheelspin_candidate"], "dt_s"
-                        ].sum()
-                    ),
                     "rear_slip_integral": float(
                         (
                             segment["rear_slip_ratio_max"].clip(lower=0)

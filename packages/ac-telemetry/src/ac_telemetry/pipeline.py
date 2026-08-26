@@ -1,12 +1,12 @@
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
 from . import __version__
 from .config import ProcessingConfig
-from .events import detect_all_events
+from .events import VehicleProfile, Wheel, detect_events
 from .manifest import DATASET_SCHEMA_VERSION, table_manifest
 from .replay import load_replay
 from .segments import load_segment_definitions, segment_passes
@@ -67,6 +67,7 @@ def preprocess_dataset(
     all_quality: list[pd.DataFrame] = []
     all_setups: list[pd.DataFrame] = []
     setup_metadata_by_id: dict[str, dict[str, Any]] = {}
+    vehicle_profiles: dict[str, VehicleProfile] = {}
     source_files: list[dict[str, Any]] = []
 
     for spec in session_specs:
@@ -94,10 +95,22 @@ def preprocess_dataset(
             session_label=spec.get("session_label"),
             driver_name=spec.get("driver_name"),
         )
+        driven_wheels_value = spec.get("driven_wheels")
+        vehicle_profile = (
+            VehicleProfile(frozenset(cast(list[Wheel], driven_wheels_value)))
+            if driven_wheels_value is not None
+            else VehicleProfile()
+        )
         for result in results:
+            result.metadata["driven_wheels"] = (
+                sorted(vehicle_profile.driven_wheels)
+                if vehicle_profile.driven_wheels is not None
+                else None
+            )
             all_sessions.append(result.metadata)
             all_samples.append(result.samples)
             all_laps.append(result.laps)
+            vehicle_profiles[str(result.metadata["session_id"])] = vehicle_profile
             if not result.quality_flags.empty:
                 all_quality.append(result.quality_flags)
         source_files.append(
@@ -155,25 +168,42 @@ def preprocess_dataset(
     )
     setups = pd.concat(all_setups, ignore_index=True) if all_setups else pd.DataFrame()
 
-    event_tables = detect_all_events(samples, config) if not samples.empty else {}
+    detected_events = (
+        detect_events(samples, config, vehicle_profiles) if not samples.empty else None
+    )
+    event_tables = detected_events.to_tables() if detected_events is not None else {}
     # Counts become lap-level facts after event detection.
     if not laps.empty:
         count_specs = {
-            "events/braking": "braking_event_count",
-            "events/abs_activity": "abs_wheel_episode_count",
-            "events/tc_activity": "tc_wheel_episode_count",
-            "events/shifts": "shift_count",
-            "events/lockups": "lockup_event_count",
-            "events/wheelspin": "wheelspin_event_count",
+            "braking": "braking_event_count",
+            "abs_intervention_candidate": "abs_wheel_episode_count",
+            "tc_intervention_candidate": "tc_wheel_episode_count",
+            "shift": "shift_count",
+            "lockup": "lockup_event_count",
+            "wheelspin": "wheelspin_event_count",
         }
-        for logical, column in count_specs.items():
-            table = event_tables.get(logical, pd.DataFrame())
+        event_index = event_tables.get("events/index", pd.DataFrame())
+        for event_type, column in count_specs.items():
+            table = event_index[event_index["event_type"] == event_type]
             counts = (
                 table.groupby("lap_id").size()
                 if not table.empty
                 else pd.Series(dtype=int)
             )
             laps[column] = laps["lap_id"].map(counts).fillna(0).astype(int)
+
+        wheel_events = event_index[
+            event_index["event_type"].isin(["lockup", "wheelspin"])
+        ]
+        for event_type in ("lockup", "wheelspin"):
+            active_time = (
+                wheel_events[wheel_events["event_type"] == event_type]
+                .groupby("lap_id")["active_duration_s"]
+                .sum()
+            )
+            laps[f"{event_type}_wheel_time_s"] = (
+                laps["lap_id"].map(active_time).fillna(0.0)
+            )
 
         abs_events = event_tables.get("events/abs_activity", pd.DataFrame())
         active_time_by_lap, max_score_by_lap = _activity_metrics_by_lap(
@@ -248,7 +278,7 @@ def preprocess_dataset(
             else None,
             "Native AC normalized spline position is not present in parsed replay data",
             "ABS activity events are spectral candidates; observed frequencies may be aliased by the replay sample rate",
-            "TC activity events are rear-wheel spectral candidates; drivetrain metadata and direct torque cut are unavailable",
+            "TC activity events are spectral candidates; direct torque cut is unavailable and sessions without driven_wheels retain four-wheel candidates marked unknown",
         ],
     }
     manifest["warnings"] = [item for item in manifest["warnings"] if item]

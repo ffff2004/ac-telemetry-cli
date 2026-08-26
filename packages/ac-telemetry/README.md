@@ -74,13 +74,14 @@ output/
 ├── laps.*
 ├── samples.*
 ├── events/
+│   ├── index.*
 │   ├── braking.*
 │   ├── abs_activity.*
 │   ├── tc_activity.*
 │   ├── throttle.*
 │   ├── shifts.*
-│   ├── lockups.*
-│   └── wheelspin.*
+│   ├── wheel_slip.*
+│   └── relations.*
 ├── segments/
 │   ├── definitions.json
 │   └── passes.*
@@ -100,8 +101,12 @@ output/
 - The parsed replay data does not contain AC's native normalized spline position. `progress` is therefore normalized cumulative horizontal path distance per lap and is marked `cumulative_distance_proxy`.
 - Pit-lane, track-valid, tyre-temperature, direct TC torque-cut, aero-load, and differential-lock channels are not present in the parsed replay data.
 - `events/abs_activity` contains per-wheel spectral ABS intervention candidates, not a native AC ABS-pressure or valve-state channel. Observed frequencies may be aliased by the replay sample rate.
-- `events/tc_activity` contains per-rear-wheel spectral TC intervention candidates. It requires high-frequency slip-ratio activity that is absent from the throttle input and exceeds the session's non-throttle noise floor; it does not use a wheel-slip trigger threshold. AC replay data does not expose direct torque cut or the driven axle, so the detector currently assumes rear-wheel drive and observed frequencies may be aliased.
-- Schema version 3 removes the inaccurate `events/throttle.tc_activity_proxy`; use `events/tc_activity` and the lap-level `tc_*` fields instead. Version 2 datasets must be regenerated before merging.
+- `events/tc_activity` contains per-driven-wheel spectral TC intervention candidates. It requires high-frequency slip-ratio activity that is absent from the throttle input and exceeds the session's non-throttle noise floor; it does not use a wheel-slip trigger threshold. Known `driven_wheels` restrict analysis to those wheels. Unknown layouts retain four-wheel candidates with `driven_status=unknown`; observed frequencies may be aliased, and AC replay data does not expose direct torque cut.
+- `events/index` is the canonical interval index. Event spans use half-open sample ranges and expose both `span_duration_s` (including closed short gaps) and `active_duration_s` (samples that actually met the detector predicate).
+- `events/wheel_slip` contains one row per wheel and slip episode. Lockup and wheelspin are detected from longitudinal slip independently of pedal input; `events/relations` records overlap with braking, throttle, and shift events. Unknown driven-wheel metadata remains `unknown` rather than assuming rear-wheel drive.
+- Lap fields `lockup_wheel_time_s` and `wheelspin_wheel_time_s` are wheel-seconds: simultaneous episodes on two wheels count twice.
+- `events/shifts` spans the observable transition from leaving the old stable gear through the first sample of the confirmed new gear, including any neutral interval.
+- Schema version 4 replaces the axle-compressed lockup/wheelspin tables with `events/index`, `events/wheel_slip`, and `events/relations`. Version 3 datasets must be regenerated before merging.
 - `rear_tire_stress_proxy` is explicitly a proxy, not a hidden AC channel.
 - The example Spa distance boundaries are calibrated to the supplied F2004 data and should not be treated as universal track coordinates.
 
@@ -117,6 +122,7 @@ preprocess_dataset(
             "replay": "run.acreplay",
             "setup": "setup.ini",
             "setup_label": "baseline",
+            "driven_wheels": ["rl", "rr"],
         }
     ],
     output_dir=Path("build/run"),
