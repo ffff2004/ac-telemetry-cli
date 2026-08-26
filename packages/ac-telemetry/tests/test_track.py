@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from ac_telemetry.config import ProcessingConfig
 from ac_telemetry.track import TrackModel
-from track_fixture import make_track
+from track_fixture import make_track, write_ai
 
 
 def test_track_model_load_align_and_tables_are_the_test_surface(tmp_path: Path) -> None:
@@ -61,3 +61,31 @@ def test_track_s_is_independent_of_actual_driven_path_length(tmp_path: Path) -> 
 
     assert aligned["track_s_m"].tolist() == pytest.approx([5.0, 5.0])
     assert aligned["lateral_offset_m"].tolist() == pytest.approx([-0.5, -2.5])
+
+
+def test_pit_projection_uses_nearby_segments(tmp_path: Path) -> None:
+    root = make_track(tmp_path / "track")
+    write_ai(
+        root / "ai" / "pit_lane.ai",
+        [(0.0, 0.0, -10.0), (10.0, 0.0, -10.0), (20.0, 0.0, -10.0)],
+    )
+    track = TrackModel.load(root)
+    samples = pd.DataFrame(
+        {
+            "lap_id": ["lap"],
+            "position.x": [10.0],
+            "position.y": [0.0],
+            "position.z": [-10.0],
+            "velocity.x": [20.0],
+            "velocity.y": [0.0],
+            "velocity.z": [0.0],
+            "accel_world_x_ms2": [0.0],
+            "accel_world_y_ms2": [0.0],
+            "accel_world_z_ms2": [0.0],
+        }
+    )
+
+    aligned = track.align(samples, ProcessingConfig())
+
+    assert aligned["pit_projection_distance_3d_m"].iloc[0] == pytest.approx(0.0)
+    assert bool(aligned["is_in_pit"].iloc[0])

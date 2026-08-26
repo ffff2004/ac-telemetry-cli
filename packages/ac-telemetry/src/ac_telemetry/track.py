@@ -3,12 +3,13 @@ from __future__ import annotations
 import configparser
 import json
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.spatial import cKDTree
 
 from .config import ProcessingConfig
 from .util import sha256_file
@@ -61,6 +62,8 @@ class _Spline:
     left_normal: np.ndarray
     curvature_1pm: np.ndarray
     total_length_m: float
+    point_tree: cKDTree = field(repr=False, compare=False)
+    segment_midpoint_tree: cKDTree = field(repr=False, compare=False)
 
     @property
     def segment_count(self) -> int:
@@ -151,6 +154,7 @@ def _parse_ai_spline(path: Path) -> _Spline:
         where=horizontal_norm[:, None] > 1e-9,
     )
     left = np.stack([horizontal[:, 1], -horizontal[:, 0]], axis=1)
+    midpoints = starts + 0.5 * vectors
 
     # Canonical distance is rebuilt from geometry. Stored cumulative distance is kept
     # only as evidence because third-party track generators sometimes write zeros or
@@ -186,6 +190,8 @@ def _parse_ai_spline(path: Path) -> _Spline:
         left_normal=left,
         curvature_1pm=curvature,
         total_length_m=total,
+        point_tree=cKDTree(points),
+        segment_midpoint_tree=cKDTree(midpoints[:, [0, 2]]),
     )
 
 
@@ -252,27 +258,24 @@ def _project_candidate_segments(
 
 
 def _initial_segment(spline: _Spline, point: np.ndarray) -> int:
-    d2 = np.einsum("ij,ij->i", spline.points - point, spline.points - point)
-    point_index = int(np.argmin(d2))
+    _distance, point_index = spline.point_tree.query(point)
+    point_index = int(point_index)
+    candidates = np.asarray(
+        [point_index - 1, point_index],
+        dtype=int,
+    )
     if spline.closed:
-        candidates = np.asarray(
-            [
-                (point_index - 1) % spline.segment_count,
-                point_index % spline.segment_count,
-            ],
-            dtype=int,
-        )
+        candidates %= spline.segment_count
     else:
-        candidates = np.asarray(
-            sorted(
-                {
-                    max(0, min(spline.segment_count - 1, point_index - 1)),
-                    max(0, min(spline.segment_count - 1, point_index)),
-                }
-            ),
-            dtype=int,
-        )
+        candidates = np.unique(np.clip(candidates, 0, spline.segment_count - 1))
     return _project_candidate_segments(spline, point, candidates)[0]
+
+
+def _segment_window(spline: _Spline, seed: int, search_window: int) -> np.ndarray:
+    indices = seed + np.arange(-2, search_window + 1, dtype=int)
+    if spline.closed:
+        return indices % spline.segment_count
+    return indices[(indices >= 0) & (indices < spline.segment_count)]
 
 
 def _project_track_points(
@@ -300,16 +303,7 @@ def _project_track_points(
         if group_changed:
             previous_segment = _initial_segment(spline, point)
             samples_since_global = 0
-        if spline.closed:
-            indices = (
-                previous_segment + np.arange(-2, search_window + 1, dtype=int)
-            ) % spline.segment_count
-        else:
-            indices = np.arange(
-                max(0, previous_segment - 2),
-                min(spline.segment_count, previous_segment + search_window + 1),
-                dtype=int,
-            )
+        indices = _segment_window(spline, previous_segment, search_window)
         best, t, projected, error = _project_candidate_segments(spline, point, indices)
         should_fallback = error > fallback_error_m and (
             group_changed
@@ -318,16 +312,7 @@ def _project_track_points(
         )
         if should_fallback:
             global_seed = _initial_segment(spline, point)
-            if spline.closed:
-                global_indices = (
-                    global_seed + np.arange(-2, search_window + 1, dtype=int)
-                ) % spline.segment_count
-            else:
-                global_indices = np.arange(
-                    max(0, global_seed - 2),
-                    min(spline.segment_count, global_seed + search_window + 1),
-                    dtype=int,
-                )
+            global_indices = _segment_window(spline, global_seed, search_window)
             global_result = _project_candidate_segments(spline, point, global_indices)
             if global_result[3] + 1e-6 < error:
                 best, t, projected, error = global_result
@@ -346,37 +331,20 @@ def _project_track_points(
     return segment_index, fraction, projection, distance, s_m
 
 
-def _build_segment_grid(
-    spline: _Spline, cell_m: float = 25.0
-) -> dict[tuple[int, int], np.ndarray]:
-    mids = spline.segment_start + 0.5 * spline.segment_vector
-    buckets: dict[tuple[int, int], list[int]] = {}
-    for index, midpoint in enumerate(mids):
-        key = (int(np.floor(midpoint[0] / cell_m)), int(np.floor(midpoint[2] / cell_m)))
-        buckets.setdefault(key, []).append(index)
-    return {key: np.asarray(value, dtype=int) for key, value in buckets.items()}
-
-
 def _project_sparse_nearby(
     spline: _Spline, points: np.ndarray, cell_m: float = 25.0
 ) -> tuple[np.ndarray, np.ndarray]:
-    grid = _build_segment_grid(spline, cell_m)
     distance = np.full(len(points), np.inf, dtype=float)
     s_m = np.full(len(points), np.nan, dtype=float)
     for row, point in enumerate(points):
-        cx = int(np.floor(point[0] / cell_m))
-        cz = int(np.floor(point[2] / cell_m))
-        candidate_chunks = [
-            grid[(cx + dx, cz + dz)]
-            for dx in (-1, 0, 1)
-            for dz in (-1, 0, 1)
-            if (cx + dx, cz + dz) in grid
-        ]
-        if not candidate_chunks:
+        # This is the radius of the square covered by the old 3x3 cell search.
+        indices = spline.segment_midpoint_tree.query_ball_point(
+            point[[0, 2]], cell_m * np.sqrt(8.0)
+        )
+        if not indices:
             continue
-        indices = np.unique(np.concatenate(candidate_chunks))
         best, t, _projection, error = _project_candidate_segments(
-            spline, point, indices
+            spline, point, np.asarray(indices, dtype=int)
         )
         distance[row] = error
         value = float(spline.distance_m[best] + t * spline.segment_length_m[best])
