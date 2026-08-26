@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
 import pytest
-from ac_telemetry.assist_activity import detect_tc_activity
+from ac_telemetry.assist_activity import (
+    detect_tc_activity,
+)
 from ac_telemetry.config import ProcessingConfig
 from ac_telemetry.events import detect_throttle
 
@@ -161,6 +163,28 @@ def test_rejects_driven_wheel_transient_during_gear_change() -> None:
     samples.loc[133:, "gear_physical"] = 4
 
     events = detect_tc_activity(samples, throttle_events, ProcessingConfig())
+
+    assert events.empty
+
+
+def test_skips_spectral_work_for_tc_windows_rejected_by_braking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    time = np.arange(267) * DT
+    slip = 0.03 + 0.025 * np.sin(2 * np.pi * 22 * time)
+    samples, throttle_events = _fixture(slip, slip * 0.9, brake=np.full(len(time), 0.9))
+    config = ProcessingConfig()
+
+    def unexpected_fft(*args: object, **kwargs: object) -> np.ndarray:
+        raise AssertionError("forbidden TC windows must not reach FFT processing")
+
+    monkeypatch.setattr("ac_telemetry.assist_activity.np.fft.rfft", unexpected_fft)
+
+    events = detect_tc_activity(
+        samples,
+        throttle_events,
+        config,
+    )
 
     assert events.empty
 

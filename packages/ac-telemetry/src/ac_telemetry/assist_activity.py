@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -168,11 +169,28 @@ class _WindowEvidence:
 class _WindowSignals:
     """Spectral values shared by all wheels in one analysis window."""
 
-    frequencies: np.ndarray
+    geometry: _SpectralGeometry
     powers: dict[str, np.ndarray]
     high_signals: dict[str, np.ndarray]
     high_rms: dict[str, float]
     allowed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _DetrendGeometry:
+    x: np.ndarray
+    vandermonde: np.ndarray
+    coefficients: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class _SpectralGeometry:
+    frequencies: np.ndarray
+    hanning: np.ndarray
+    signal_high_mask: np.ndarray
+    low_band_mask: np.ndarray
+    high_band_mask: np.ndarray
+    analysis_band_mask: np.ndarray
 
 
 def _abs_spec(config: ProcessingConfig) -> _ActivitySpec:
@@ -227,20 +245,90 @@ def _tc_spec(config: ProcessingConfig) -> _ActivitySpec:
     )
 
 
+@lru_cache(maxsize=64)
+def _detrend_geometry(length: int) -> _DetrendGeometry:
+    x = np.linspace(-1.0, 1.0, length)
+    vandermonde = np.vander(x, 3)
+    scale = np.sqrt(np.sum(vandermonde * vandermonde, axis=0))
+    scaled = vandermonde / scale
+    coefficients = np.linalg.pinv(scaled) / scale[:, np.newaxis]
+    for values in (x, vandermonde, coefficients):
+        values.setflags(write=False)
+    return _DetrendGeometry(x, vandermonde, coefficients)
+
+
+def _detrend_many(values: np.ndarray) -> np.ndarray:
+    """Quadratically detrend a batch of equally sized windows."""
+    windows = np.asarray(values, dtype=float)
+    if windows.ndim != 2:
+        raise ValueError("Expected a two-dimensional window array")
+    if windows.shape[1] < 3:
+        return windows - np.nanmean(windows, axis=1, keepdims=True)
+
+    geometry = _detrend_geometry(windows.shape[1])
+    finite = np.isfinite(windows)
+    filled = windows if finite.all() else windows.copy()
+    for index in np.flatnonzero(~finite.all(axis=1)):
+        present = finite[index]
+        if present.sum() < 3:
+            filled[index] = 0.0
+        else:
+            filled[index] = np.interp(
+                geometry.x,
+                geometry.x[present],
+                windows[index, present],
+            )
+    trend = (filled @ geometry.coefficients.T) @ geometry.vandermonde.T
+    return filled - trend
+
+
 def _detrend(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=float)
     if len(values) < 3:
         return values - np.nanmean(values)
-    x = np.linspace(-1.0, 1.0, len(values))
-    finite = np.isfinite(values)
-    if finite.sum() < 3:
+    if np.isfinite(values).sum() < 3:
         return np.zeros_like(values)
-    filled = np.interp(x, x[finite], values[finite])
-    return filled - np.polyval(np.polyfit(x, filled, 2), x)
+    return _detrend_many(values[np.newaxis, :])[0]
 
 
-def _window_power(detrended: np.ndarray, hanning: np.ndarray) -> np.ndarray:
-    return np.abs(np.fft.rfft(detrended * hanning)) ** 2
+@lru_cache(maxsize=128)
+def _spectral_geometry(
+    window_samples: int,
+    sample_rate_hz: float,
+    low_frequency_min_hz: float,
+    low_frequency_max_hz: float,
+    high_frequency_min_hz: float,
+    high_max_hz: float,
+) -> _SpectralGeometry:
+    frequencies = np.fft.rfftfreq(window_samples, d=1.0 / sample_rate_hz)
+    signal_high_mask = (frequencies < high_frequency_min_hz) | (
+        frequencies > high_max_hz
+    )
+    low_band_mask = (frequencies >= low_frequency_min_hz) & (
+        frequencies < low_frequency_max_hz
+    )
+    high_band_mask = (frequencies >= high_frequency_min_hz) & (
+        frequencies < high_max_hz
+    )
+    analysis_band_mask = (frequencies >= 2.0) & (frequencies < high_max_hz)
+    hanning = np.hanning(window_samples)
+    for values in (
+        frequencies,
+        signal_high_mask,
+        low_band_mask,
+        high_band_mask,
+        analysis_band_mask,
+        hanning,
+    ):
+        values.setflags(write=False)
+    return _SpectralGeometry(
+        frequencies,
+        hanning,
+        signal_high_mask,
+        low_band_mask,
+        high_band_mask,
+        analysis_band_mask,
+    )
 
 
 def _high_band_signal(
@@ -250,12 +338,6 @@ def _high_band_signal(
     transformed = np.fft.rfft(detrended)
     transformed[high_mask] = 0
     return np.fft.irfft(transformed, n=len(detrended))
-
-
-def _band_power(
-    frequencies: np.ndarray, power: np.ndarray, low: float, high: float
-) -> float:
-    return float(power[(frequencies >= low) & (frequencies < high)].sum())
 
 
 def _band_signal(
@@ -388,26 +470,35 @@ def _window_evidence(
     spec: _ActivitySpec,
     cached: _WindowSignals,
 ) -> _WindowEvidence:
+    if not cached.allowed:
+        return _WindowEvidence(
+            start,
+            end,
+            False,
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            0.0,
+        )
     wheel_column = f"wheel_{wheel}_slip_ratio"
     opposite_column = f"wheel_{_OPPOSITE_WHEEL[wheel]}_slip_ratio"
-    frequencies = cached.frequencies
+    geometry = cached.geometry
+    frequencies = geometry.frequencies
     wheel_power = cached.powers[wheel_column]
     control_power = cached.powers[spec.control_column]
     wheel_high = cached.high_signals[wheel_column]
     opposite_high = cached.high_signals[opposite_column]
     high_rms = cached.high_rms[wheel_column]
     allowed = cached.allowed
-    low_power = _band_power(
-        frequencies, wheel_power, spec.low_frequency_min_hz, spec.low_frequency_max_hz
-    )
-    high_power = _band_power(
-        frequencies, wheel_power, spec.high_frequency_min_hz, high_max_hz
-    )
-    analysis_power = _band_power(frequencies, wheel_power, 2.0, high_max_hz)
-    control_high_power = _band_power(
-        frequencies, control_power, spec.high_frequency_min_hz, high_max_hz
-    )
-    control_analysis_power = _band_power(frequencies, control_power, 2.0, high_max_hz)
+    low_power = float(wheel_power[geometry.low_band_mask].sum())
+    high_power = float(wheel_power[geometry.high_band_mask].sum())
+    analysis_power = float(wheel_power[geometry.analysis_band_mask].sum())
+    control_high_power = float(control_power[geometry.high_band_mask].sum())
+    control_analysis_power = float(control_power[geometry.analysis_band_mask].sum())
     epsilon = np.finfo(float).eps
     high_to_low = high_power / max(low_power, epsilon)
     high_fraction = high_power / max(analysis_power, epsilon)
@@ -418,9 +509,7 @@ def _window_evidence(
         else float("nan")
     )
 
-    high_mask = (frequencies >= spec.high_frequency_min_hz) & (
-        frequencies < high_max_hz
-    )
+    high_mask = geometry.high_band_mask
     if high_mask.any() and high_power > epsilon:
         high_indices = np.flatnonzero(high_mask)
         peak_index = int(high_indices[np.argmax(wheel_power[high_mask])])
@@ -547,50 +636,81 @@ def _build_window_signals(
     margin = (
         round(config.tc_shift_exclusion_s * sample_rate_hz) if spec.kind == "tc" else 0
     )
-    frequencies = np.fft.rfftfreq(window_samples, d=1.0 / sample_rate_hz)
-    signal_high_mask = (frequencies < spec.high_frequency_min_hz) | (
-        frequencies > high_max_hz
+    geometry = _spectral_geometry(
+        window_samples,
+        sample_rate_hz,
+        spec.low_frequency_min_hz,
+        spec.low_frequency_max_hz,
+        spec.high_frequency_min_hz,
+        high_max_hz,
     )
-    hanning = np.hanning(window_samples)
-    cached_windows: list[_WindowSignals] = []
-    for start in starts:
-        end = start + window_samples
-        detrended = {
-            column: _detrend(values[start:end])
-            for column, values in signal_arrays.items()
-        }
-        powers: dict[str, np.ndarray] = {}
-        high_signals: dict[str, np.ndarray] = {}
-        high_rms: dict[str, float] = {}
-        for column, values in detrended.items():
-            powers[column] = _window_power(values, hanning)
-            high_signal = _high_band_signal(values, signal_high_mask)
-            high_signals[column] = high_signal
-            high_rms[column] = float(np.sqrt(np.mean(high_signal**2)))
-        control_detrended = _detrend(control_values[start:end])
-        powers[spec.control_column] = _window_power(control_detrended, hanning)
+    allowed_by_start = np.ones(len(starts), dtype=bool)
+    if spec.kind == "tc":
+        assert brake_values is not None
+        allowed_by_start = np.asarray(
+            [
+                _tc_window_allowed(
+                    brake_values,
+                    gear_values,
+                    shift_indices,
+                    start,
+                    start + window_samples,
+                    margin,
+                    config.brake_active_threshold,
+                )
+                for start in starts
+            ],
+            dtype=bool,
+        )
+    cached_windows = [
+        _WindowSignals(geometry, {}, {}, {}, bool(allowed))
+        for allowed in allowed_by_start
+    ]
+    valid_indexes = np.flatnonzero(allowed_by_start)
+    if not len(valid_indexes) or not wheel_columns:
+        return cached_windows
 
-        if spec.kind == "tc":
-            assert brake_values is not None
-            allowed = _tc_window_allowed(
-                brake_values,
-                gear_values,
-                shift_indices,
-                start,
-                end,
-                margin,
-                config.brake_active_threshold,
-            )
-        else:
-            allowed = True
-        cached_windows.append(
-            _WindowSignals(
-                frequencies,
-                powers,
-                high_signals,
-                high_rms,
-                allowed,
-            )
+    signal_values = np.stack([signal_arrays[column] for column in wheel_columns])
+    signal_windows = np.lib.stride_tricks.sliding_window_view(
+        signal_values, window_samples, axis=1
+    )[:, starts, :][:, valid_indexes, :]
+    detrended = _detrend_many(signal_windows.reshape(-1, window_samples)).reshape(
+        signal_windows.shape
+    )
+    power_values = np.abs(np.fft.rfft(detrended * geometry.hanning, axis=2)) ** 2
+    high_transformed = np.fft.rfft(detrended, axis=2)
+    high_transformed[:, :, geometry.signal_high_mask] = 0
+    high_signals = np.fft.irfft(high_transformed, n=window_samples, axis=2)
+    high_rms = np.sqrt(np.mean(high_signals**2, axis=2))
+
+    control_windows = np.lib.stride_tricks.sliding_window_view(
+        control_values, window_samples
+    )[starts][valid_indexes]
+    control_detrended = _detrend_many(control_windows)
+    control_powers = (
+        np.abs(np.fft.rfft(control_detrended * geometry.hanning, axis=1)) ** 2
+    )
+
+    for result_index, window_index in enumerate(valid_indexes):
+        powers = {
+            column: power_values[column_index, result_index]
+            for column_index, column in enumerate(wheel_columns)
+        }
+        powers[spec.control_column] = control_powers[result_index]
+        window_high_signals = {
+            column: high_signals[column_index, result_index]
+            for column_index, column in enumerate(wheel_columns)
+        }
+        window_high_rms = {
+            column: float(high_rms[column_index, result_index])
+            for column_index, column in enumerate(wheel_columns)
+        }
+        cached_windows[window_index] = _WindowSignals(
+            geometry,
+            powers,
+            window_high_signals,
+            window_high_rms,
+            True,
         )
     return cached_windows
 
