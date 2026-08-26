@@ -95,24 +95,11 @@ def parse_setup_file(
 
 
 def parse_setup_bundle(
-    ini_path: Path | None,
-    sp_path: Path | None = None,
-    setup_label: str | None = None,
+    ini_path: Path | None, setup_label: str | None = None
 ) -> tuple[dict[str, Any] | None, pd.DataFrame]:
     if ini_path is None:
         return None, pd.DataFrame()
-    metadata, table = parse_setup_file(ini_path, setup_label)
-    if sp_path is not None:
-        sp_metadata, sp_table = parse_setup_file(sp_path, setup_label)
-        sp_table = sp_table.copy()
-        sp_table["setup_id"] = metadata["setup_id"]
-        sp_table["setup_label"] = metadata["setup_label"]
-        sp_table["section"] = "SP:" + sp_table["section"].astype(str)
-        table = pd.concat([table, sp_table], ignore_index=True)
-        metadata["sp_source_file"] = str(sp_path)
-        metadata["sp_source_hash"] = sp_metadata["source_hash"]
-        metadata["sp_raw"] = sp_metadata["raw"]
-    return metadata, table
+    return parse_setup_file(ini_path, setup_label)
 
 
 def build_setup_diffs(table: pd.DataFrame) -> pd.DataFrame:

@@ -1,6 +1,5 @@
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -8,10 +7,9 @@ from typing import Any
 import pandas as pd
 
 from .config import ProcessingConfig
-from .manifest import DATASET_SCHEMA_VERSION, require_compatible_schema, table_manifest
+from .merge import merge_datasets
 from .pipeline import load_dataset_table, preprocess_dataset
 from .replay import inspect_replay
-from .storage import DatasetStorage
 from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, json_load
 from .validation import validate_dataset
@@ -31,7 +29,11 @@ def _load_session_specs(
         specs: list[dict[str, Any]] = []
         for item in data.get("sessions", []):
             spec = dict(item)
-            for key in ["replay", "setup", "setup_sp"]:
+            if "setup_sp" in spec:
+                raise ValueError(
+                    "setup_sp is no longer supported; use the .ini setup file"
+                )
+            for key in ["replay", "setup"]:
                 if spec.get(key):
                     path = Path(spec[key])
                     spec[key] = str(path if path.is_absolute() else base / path)
@@ -60,7 +62,6 @@ def _load_session_specs(
         {
             "replay": replay,
             "setup": args.setup,
-            "setup_sp": args.setup_sp,
             "setup_label": args.setup_label,
             "driver_name": args.driver_name,
         }
@@ -136,37 +137,7 @@ def command_export_csv(args: argparse.Namespace) -> int:
 def command_merge(args: argparse.Namespace) -> int:
     roots = [Path(item).resolve() for item in args.datasets]
     output = Path(args.output).resolve()
-    manifests = [json_load(root / "manifest.json") for root in roots]
-    require_compatible_schema(manifests)
-    reference_ids = {manifest.get("track_reference_id") for manifest in manifests}
-    if len(reference_ids) != 1:
-        raise ValueError(
-            f"All input datasets must use the same track reference; found {sorted(reference_ids, key=str)}"
-        )
-    if output.exists():
-        if not args.overwrite:
-            raise FileExistsError(f"Output directory exists: {output}")
-        shutil.rmtree(output)
-    output.mkdir(parents=True)
-    logical_names = sorted(set.intersection(*(set(m["tables"]) for m in manifests)))
-    storage = DatasetStorage(output)
-    refs = []
-    for logical in logical_names:
-        frames = [load_dataset_table(root, logical) for root in roots]
-        merged = pd.concat(frames, ignore_index=True).drop_duplicates()
-        refs.append(storage.write(logical, merged))
-    manifest = {
-        "schema_version": DATASET_SCHEMA_VERSION,
-        "tool_version": manifests[0].get("tool_version"),
-        "dataset_id": "merged-" + "-".join(m["dataset_id"][:8] for m in manifests),
-        "source_datasets": [str(root) for root in roots],
-        "track_reference_id": manifests[0].get("track_reference_id"),
-        "track": manifests[0].get("track"),
-        "tables": table_manifest(refs),
-        "warnings": ["Only tables common to every input dataset were merged"],
-    }
-    json_dump(output / "manifest.json", manifest)
-    json_dump(output / "quality" / "validation.json", validate_dataset(output))
+    manifest = merge_datasets(roots, output, overwrite=args.overwrite)
     _print_json({"status": "ok", "output": str(output), "tables": manifest["tables"]})
     return 0
 
@@ -191,7 +162,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", help="Dataset JSON containing per-session replay/setup mappings"
     )
     preprocess.add_argument("--setup")
-    preprocess.add_argument("--setup-sp")
     preprocess.add_argument("--setup-label")
     preprocess.add_argument("--driver-name", help="Process only the named driver's car")
     preprocess.add_argument(

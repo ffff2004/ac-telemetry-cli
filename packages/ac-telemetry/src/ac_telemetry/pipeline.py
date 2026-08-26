@@ -77,13 +77,8 @@ def preprocess_dataset(
         setup_path = (
             Path(spec["setup"]).expanduser().resolve() if spec.get("setup") else None
         )
-        setup_sp_path = (
-            Path(spec["setup_sp"]).expanduser().resolve()
-            if spec.get("setup_sp")
-            else None
-        )
         setup_meta, setup_table = parse_setup_bundle(
-            setup_path, setup_sp_path, spec.get("setup_label")
+            setup_path, spec.get("setup_label")
         )
         setup_id = setup_meta["setup_id"] if setup_meta else None
         if setup_meta and setup_id is not None and setup_id not in setup_metadata_by_id:
@@ -134,16 +129,6 @@ def preprocess_dataset(
                     "type": "ac_setup_ini",
                 }
             )
-        if setup_sp_path:
-            source_files.append(
-                {
-                    "path": str(setup_sp_path),
-                    "name": setup_sp_path.name,
-                    "sha256": sha256_file(setup_sp_path),
-                    "type": "ac_setup_sp",
-                }
-            )
-
     sessions = pd.DataFrame(all_sessions)
     # Store nested replay metadata as JSON-compatible string in the tabular layer.
     if "replay_metadata" in sessions:

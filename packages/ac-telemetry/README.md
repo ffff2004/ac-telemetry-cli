@@ -27,7 +27,6 @@ ac-telemetry preprocess \
   replay.acreplay \
   --track /path/to/assettocorsa/content/tracks/spa \
   --setup gear+aero.ini \
-  --setup-sp gear+aero.sp \
   --segments examples/spa_segments.json \
   --output build/f2004-july
 ```
@@ -55,6 +54,11 @@ ac-telemetry summarize build/f2004-history
 ac-telemetry export-csv build/f2004-history --table segments/passes --output passes.csv
 ac-telemetry merge build/session-a build/session-b --output build/combined
 ```
+
+`merge` accepts only complete datasets with the core `sessions`, `laps`,
+`samples`, and `track/reference` tables. It requires compatible processing and
+track definitions, rejects conflicting keyed facts or setup metadata, and
+regenerates setup and summary artifacts from the merged facts.
 
 ## Output dataset
 
