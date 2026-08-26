@@ -19,9 +19,8 @@ AC track ─→ fast_lane.ai / pit_lane.ai ─→ TrackModel ─┘
 `TrackModel` supplies the canonical circuit coordinate. Vehicle path distance is
 kept separately and is never used as a proxy for track position.
 
-Replay CSV is not an input format for `ac-telemetry`. Generated datasets may
-still use CSV or Parquet storage, and individual tables can be exported as
-CSV.
+Replay CSV is not an input format for `ac-telemetry`. Generated dataset tables
+use Parquet storage, and individual tables can be exported as CSV.
 
 ## Workspace setup
 

@@ -32,10 +32,11 @@ def test_pipeline_writes_normalized_event_tables(tmp_path: Path) -> None:
         [{"replay": replay_path}],
         tmp_path / "dataset",
         track_dir=make_track(tmp_path / "track"),
-        storage_format="csv",
     )
 
     tables = manifest["tables"]
+    assert "table_format" not in manifest
+    assert all(info["path"].endswith(".parquet") for info in tables.values())
     assert "events/index" in tables
     assert "events/wheel_slip" in tables
     assert "events/relations" in tables

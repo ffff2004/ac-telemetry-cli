@@ -3,7 +3,7 @@ from ac_telemetry.manifest import DATASET_SCHEMA_VERSION, require_compatible_sch
 
 
 def test_current_schema_is_compatible() -> None:
-    assert DATASET_SCHEMA_VERSION == "5"
+    assert DATASET_SCHEMA_VERSION == "6"
     require_compatible_schema([{"schema_version": DATASET_SCHEMA_VERSION}])
 
 

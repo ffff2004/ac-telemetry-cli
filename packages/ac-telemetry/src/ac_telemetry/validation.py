@@ -61,7 +61,7 @@ def validate_dataset(root: Path) -> dict[str, Any]:
             {"code": "MISSING_TABLES", "message": f"Missing tables: {missing}"}
         )
 
-    storage = DatasetStorage(root, manifest.get("table_format", "csv"))
+    storage = DatasetStorage(root)
     loaded: dict[str, Any] = {}
     for logical, info in table_map.items():
         path = root / info["path"]
@@ -83,12 +83,6 @@ def validate_dataset(root: Path) -> dict[str, Any]:
                     }
                 )
         except Exception as exc:  # validation must report, not crash
-            # CSV has no representable schema for a 0-row/0-column DataFrame;
-            # pandas writes a blank file and read_csv raises EmptyDataError. The
-            # manifest row count is the observable contract in that case.
-            if info.get("rows") == 0 and path.stat().st_size <= 2:
-                checks[f"table:{logical}"] = "pass"
-                continue
             checks[f"table:{logical}"] = "fail"
             warnings.append(
                 {"code": "TABLE_READ_ERROR", "message": f"{logical}: {exc}"}

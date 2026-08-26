@@ -88,7 +88,6 @@ def command_preprocess(args: argparse.Namespace) -> int:
         track_dir=track_dir,
         segment_path=segment_path,
         config=ProcessingConfig(),
-        storage_format=args.storage,
         overwrite=args.overwrite,
     )
     _print_json(
@@ -96,7 +95,6 @@ def command_preprocess(args: argparse.Namespace) -> int:
             "status": "ok",
             "dataset_id": manifest["dataset_id"],
             "output": str(Path(args.output).resolve()),
-            "table_format": manifest["table_format"],
             "tables": manifest["tables"],
             "warnings": manifest["warnings"],
         }
@@ -126,7 +124,7 @@ def command_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_export(args: argparse.Namespace) -> int:
+def command_export_csv(args: argparse.Namespace) -> int:
     frame = load_dataset_table(Path(args.dataset).resolve(), args.table)
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +149,7 @@ def command_merge(args: argparse.Namespace) -> int:
         shutil.rmtree(output)
     output.mkdir(parents=True)
     logical_names = sorted(set.intersection(*(set(m["tables"]) for m in manifests)))
-    storage = DatasetStorage(output, args.storage)
+    storage = DatasetStorage(output)
     refs = []
     for logical in logical_names:
         frames = [load_dataset_table(root, logical) for root in roots]
@@ -161,7 +159,6 @@ def command_merge(args: argparse.Namespace) -> int:
         "schema_version": DATASET_SCHEMA_VERSION,
         "tool_version": manifests[0].get("tool_version"),
         "dataset_id": "merged-" + "-".join(m["dataset_id"][:8] for m in manifests),
-        "table_format": storage.format,
         "source_datasets": [str(root) for root in roots],
         "track_reference_id": manifests[0].get("track_reference_id"),
         "track": manifests[0].get("track"),
@@ -202,9 +199,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preprocess.add_argument("--segments")
     preprocess.add_argument("--output", required=True)
-    preprocess.add_argument(
-        "--storage", choices=["auto", "parquet", "csv"], default="auto"
-    )
     preprocess.add_argument("--overwrite", action="store_true")
     preprocess.set_defaults(func=command_preprocess)
 
@@ -218,20 +212,19 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("dataset")
     summarize.set_defaults(func=command_summarize)
 
-    export = sub.add_parser("export", help="Export one logical table to CSV")
-    export.add_argument("dataset")
-    export.add_argument(
+    export_csv = sub.add_parser("export-csv", help="Export one logical table to CSV")
+    export_csv.add_argument("dataset")
+    export_csv.add_argument(
         "--table",
         required=True,
         help="Logical table name, e.g. laps or segments/passes",
     )
-    export.add_argument("--output", required=True)
-    export.set_defaults(func=command_export)
+    export_csv.add_argument("--output", required=True)
+    export_csv.set_defaults(func=command_export_csv)
 
     merge = sub.add_parser("merge", help="Merge compatible generated datasets")
     merge.add_argument("datasets", nargs="+")
     merge.add_argument("--output", required=True)
-    merge.add_argument("--storage", choices=["auto", "parquet", "csv"], default="auto")
     merge.add_argument("--overwrite", action="store_true")
     merge.set_defaults(func=command_merge)
     return parser

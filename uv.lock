@@ -43,6 +43,7 @@ dependencies = [
     { name = "ac-replay-parser" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pyarrow" },
     { name = "scipy" },
 ]
 
@@ -50,20 +51,17 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
-parquet = [
-    { name = "pyarrow" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "ac-replay-parser", editable = "packages/ac-replay-parser" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.1" },
-    { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=15" },
+    { name = "pyarrow", specifier = ">=15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "scipy", specifier = ">=1.14" },
 ]
-provides-extras = ["parquet", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "cfgv"

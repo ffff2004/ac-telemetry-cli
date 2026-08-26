@@ -51,7 +51,6 @@ def preprocess_dataset(
     track_dir: Path,
     segment_path: Path | None = None,
     config: ProcessingConfig | None = None,
-    storage_format: str = "auto",
     overwrite: bool = False,
 ) -> dict[str, Any]:
     config = config or ProcessingConfig()
@@ -61,7 +60,7 @@ def preprocess_dataset(
             raise FileExistsError(f"Output directory already exists: {output_dir}")
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    storage = DatasetStorage(output_dir, storage_format)
+    storage = DatasetStorage(output_dir)
     segment_definitions = load_segment_definitions(segment_path)
 
     all_sessions: list[dict[str, Any]] = []
@@ -300,7 +299,6 @@ def preprocess_dataset(
         "tool_version": __version__,
         "dataset_id": dataset_id,
         "created_at": utc_now_iso(),
-        "table_format": storage.format,
         "source_files": source_files,
         "processing_options": config.to_dict(),
         "track": track_model.metadata,
@@ -309,14 +307,10 @@ def preprocess_dataset(
         "segment_definition_source": str(segment_path) if segment_path else None,
         "tables": table_manifest(refs),
         "warnings": [
-            "Parquet unavailable; CSV fallback used"
-            if storage.format == "csv"
-            else None,
             "ABS activity events are spectral candidates; observed frequencies may be aliased by the replay sample rate",
             "TC activity events are spectral candidates; direct torque cut is unavailable and sessions without driven_wheels retain four-wheel candidates marked unknown",
         ],
     }
-    manifest["warnings"] = [item for item in manifest["warnings"] if item]
     json_dump(output_dir / "manifest.json", manifest)
 
     validation = validate_dataset(output_dir)
@@ -331,5 +325,5 @@ def load_dataset_table(root: Path, logical_name: str) -> pd.DataFrame:
     info = manifest["tables"].get(logical_name)
     if info is None:
         raise KeyError(f"Unknown table {logical_name!r}")
-    storage = DatasetStorage(root, manifest.get("table_format", "csv"))
+    storage = DatasetStorage(root)
     return storage.read(info["path"])

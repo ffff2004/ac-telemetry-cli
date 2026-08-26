@@ -5,21 +5,14 @@ A Python CLI and library that mechanically preprocesses Assetto Corsa `.acreplay
 It deliberately does **not** produce coaching advice. It produces normalized facts, event tables, segment passes, setup metadata, quality flags, and a compact AI context file.
 
 The commands below assume they are run from the repository root. Replay input
-is `.acreplay`; CSV is used only for optional generated table storage/export.
+is `.acreplay`; generated dataset tables are stored as Parquet. The
+`export-csv` command provides a CSV export for interoperability.
 
 ## Install
 
 ```bash
 uv sync --package ac-telemetry --extra dev
 ```
-
-For Parquet output:
-
-```bash
-uv sync --package ac-telemetry --extra parquet
-```
-
-Without `pyarrow`, `--storage auto` falls back to CSV and records that fact in `manifest.json`.
 
 ## Inspect a replay
 
@@ -36,8 +29,7 @@ ac-telemetry preprocess \
   --setup gear+aero.ini \
   --setup-sp gear+aero.sp \
   --segments examples/spa_segments.json \
-  --output build/f2004-july \
-  --storage auto
+  --output build/f2004-july
 ```
 
 ## Preprocess sessions with different setups
@@ -60,45 +52,46 @@ A multi-car replay is expanded into one session per car. Use
 ```bash
 ac-telemetry validate build/f2004-history
 ac-telemetry summarize build/f2004-history
-ac-telemetry export build/f2004-history --table segments/passes --output passes.csv
+ac-telemetry export-csv build/f2004-history --table segments/passes --output passes.csv
 ac-telemetry merge build/session-a build/session-b --output build/combined
 ```
 
 ## Output dataset
 
-The exact extension is `.parquet` or `.csv`, depending on storage support.
+Dataset tables use the `.parquet` extension. JSON files are metadata or compact
+sidecar artifacts; `export-csv` writes the selected table as CSV.
 
 ```text
 output/
 ├── manifest.json
-├── sessions.*
-├── laps.*
-├── samples.*
+├── sessions.parquet
+├── laps.parquet
+├── samples.parquet
 ├── track/
-│   ├── reference.*
-│   ├── pit_reference.*
-│   ├── sections.*
-│   └── drs_zones.*
+│   ├── reference.parquet
+│   ├── pit_reference.parquet
+│   ├── sections.parquet
+│   └── drs_zones.parquet
 ├── events/
-│   ├── index.*
-│   ├── braking.*
-│   ├── abs_activity.*
-│   ├── tc_activity.*
-│   ├── throttle.*
-│   ├── shifts.*
-│   ├── wheel_slip.*
-│   └── relations.*
+│   ├── index.parquet
+│   ├── braking.parquet
+│   ├── abs_activity.parquet
+│   ├── tc_activity.parquet
+│   ├── throttle.parquet
+│   ├── shifts.parquet
+│   ├── wheel_slip.parquet
+│   └── relations.parquet
 ├── segments/
 │   ├── definitions.json
-│   └── passes.*
+│   └── passes.parquet
 ├── setup/
-│   ├── normalized.*
+│   ├── normalized.parquet
 │   └── raw.json
 ├── summaries/
-│   ├── segment_statistics.*
+│   ├── segment_statistics.parquet
 │   └── ai_context.json
 └── quality/
-    ├── flags.*
+    ├── flags.parquet
     └── validation.json
 ```
 
