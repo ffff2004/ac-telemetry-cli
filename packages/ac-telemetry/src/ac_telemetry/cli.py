@@ -23,7 +23,7 @@ def _print_json(value: Any) -> None:
 
 def _load_session_specs(
     args: argparse.Namespace,
-) -> tuple[list[dict[str, Any]], Path | None]:
+) -> tuple[list[dict[str, Any]], Path | None, Path]:
     if args.config:
         config_path = Path(args.config).resolve()
         data = json_load(config_path)
@@ -41,10 +41,21 @@ def _load_session_specs(
         if segments:
             candidate = Path(segments)
             segment_path = candidate if candidate.is_absolute() else base / candidate
-        return specs, segment_path
+        track_value = data.get("track")
+        if not track_value:
+            raise ValueError(
+                "Dataset config must define track as an AC track/layout directory"
+            )
+        track_candidate = Path(track_value)
+        track_path = (
+            track_candidate if track_candidate.is_absolute() else base / track_candidate
+        )
+        return specs, segment_path, track_path.resolve()
 
     if not args.replays:
         raise ValueError("Provide replay files or --config")
+    if not args.track:
+        raise ValueError("Provide --track with the AC track/layout directory")
     specs = [
         {
             "replay": replay,
@@ -55,7 +66,11 @@ def _load_session_specs(
         }
         for replay in args.replays
     ]
-    return specs, Path(args.segments).resolve() if args.segments else None
+    return (
+        specs,
+        Path(args.segments).resolve() if args.segments else None,
+        Path(args.track).resolve(),
+    )
 
 
 def command_inspect(args: argparse.Namespace) -> int:
@@ -65,11 +80,12 @@ def command_inspect(args: argparse.Namespace) -> int:
 
 
 def command_preprocess(args: argparse.Namespace) -> int:
-    specs, config_segments = _load_session_specs(args)
+    specs, config_segments, track_dir = _load_session_specs(args)
     segment_path = Path(args.segments).resolve() if args.segments else config_segments
     manifest = preprocess_dataset(
         specs,
         Path(args.output).resolve(),
+        track_dir=track_dir,
         segment_path=segment_path,
         config=ProcessingConfig(),
         storage_format=args.storage,
@@ -124,6 +140,11 @@ def command_merge(args: argparse.Namespace) -> int:
     output = Path(args.output).resolve()
     manifests = [json_load(root / "manifest.json") for root in roots]
     require_compatible_schema(manifests)
+    reference_ids = {manifest.get("track_reference_id") for manifest in manifests}
+    if len(reference_ids) != 1:
+        raise ValueError(
+            f"All input datasets must use the same track reference; found {sorted(reference_ids, key=str)}"
+        )
     if output.exists():
         if not args.overwrite:
             raise FileExistsError(f"Output directory exists: {output}")
@@ -142,6 +163,8 @@ def command_merge(args: argparse.Namespace) -> int:
         "dataset_id": "merged-" + "-".join(m["dataset_id"][:8] for m in manifests),
         "table_format": storage.format,
         "source_datasets": [str(root) for root in roots],
+        "track_reference_id": manifests[0].get("track_reference_id"),
+        "track": manifests[0].get("track"),
         "tables": table_manifest(refs),
         "warnings": ["Only tables common to every input dataset were merged"],
     }
@@ -156,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="ac-telemetry",
         description="Mechanical preprocessing for Assetto Corsa .acreplay telemetry files.",
     )
-    parser.add_argument("--version", action="version", version="ac-telemetry 0.1.0")
+    parser.add_argument("--version", action="version", version="ac-telemetry 0.2.0")
     sub = parser.add_subparsers(dest="command", required=True)
 
     inspect_cmd = sub.add_parser("inspect", help="Inspect .acreplay metadata and cars")
@@ -174,6 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
     preprocess.add_argument("--setup-sp")
     preprocess.add_argument("--setup-label")
     preprocess.add_argument("--driver-name", help="Process only the named driver's car")
+    preprocess.add_argument(
+        "--track", help="AC track/layout directory containing ai/fast_lane.ai"
+    )
     preprocess.add_argument("--segments")
     preprocess.add_argument("--output", required=True)
     preprocess.add_argument(

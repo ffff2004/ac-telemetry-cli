@@ -11,6 +11,7 @@ from .events import (
     detect_events,
 )
 from .pipeline import preprocess_dataset
+from .track import TrackModel
 
 __all__ = [
     "EventConfigError",
@@ -19,5 +20,6 @@ __all__ = [
     "ProcessingConfig",
     "VehicleProfile",
     "detect_events",
+    "TrackModel",
     "preprocess_dataset",
 ]

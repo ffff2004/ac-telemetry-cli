@@ -19,17 +19,17 @@ def _samples() -> pd.DataFrame:
         "sample_index": np.arange(count),
         "lap_time_s": np.arange(count) * 0.02,
         "dt_s": dt_s,
-        "actual_distance_m": np.arange(count, dtype=float),
-        "progress": np.arange(count, dtype=float) / count,
+        "track_s_m": np.arange(count, dtype=float),
+        "track_progress": np.arange(count, dtype=float) / count,
         "speed_kmh": np.full(count, 100.0),
         "brake_n": brake,
         "throttle": throttle,
         "is_braking": brake >= 0.10,
         "gear_physical": gears,
         "rpm": np.linspace(7000.0, 6500.0, count),
-        "long_g": np.zeros(count),
+        "track_long_g": np.zeros(count),
         "steerAngle": np.zeros(count),
-        "yaw_rate_rad_s": np.zeros(count),
+        "velocity_heading_rate_rad_s": np.zeros(count),
     }
     for wheel in ("fl", "fr", "rl", "rr"):
         data[f"wheel_{wheel}_slip_ratio"] = np.zeros(count)

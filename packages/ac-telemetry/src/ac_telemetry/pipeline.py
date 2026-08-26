@@ -13,6 +13,7 @@ from .segments import load_segment_definitions, segment_passes
 from .setup_parser import build_setup_diffs, parse_setup_bundle
 from .storage import DatasetStorage, TableRef
 from .summary import build_ai_context, build_segment_statistics
+from .track import TrackModel
 from .util import json_dump, sha256_file, stable_id, utc_now_iso
 from .validation import validate_dataset
 
@@ -47,12 +48,14 @@ def _activity_metrics_by_lap(
 def preprocess_dataset(
     session_specs: list[dict[str, Any]],
     output_dir: Path,
+    track_dir: Path,
     segment_path: Path | None = None,
     config: ProcessingConfig | None = None,
     storage_format: str = "auto",
     overwrite: bool = False,
 ) -> dict[str, Any]:
     config = config or ProcessingConfig()
+    track_model = TrackModel.load(track_dir)
     if output_dir.exists():
         if not overwrite:
             raise FileExistsError(f"Output directory already exists: {output_dir}")
@@ -91,6 +94,7 @@ def preprocess_dataset(
         results = load_replay(
             replay_path,
             config,
+            track_model,
             setup_id=setup_id,
             session_label=spec.get("session_label"),
             driver_name=spec.get("driver_name"),
@@ -102,6 +106,7 @@ def preprocess_dataset(
             else VehicleProfile()
         )
         for result in results:
+            result.metadata["track_reference_id"] = track_model.reference_id
             result.metadata["driven_wheels"] = (
                 sorted(vehicle_profile.driven_wheels)
                 if vehicle_profile.driven_wheels is not None
@@ -235,7 +240,13 @@ def preprocess_dataset(
         laps["max_tc_activity_score"] = laps["lap_id"].map(max_score_by_lap).fillna(0.0)
 
     setup_diffs = build_setup_diffs(setups)
-    passes = segment_passes(samples, laps, segment_definitions)
+    passes = segment_passes(
+        samples,
+        laps,
+        segment_definitions,
+        config,
+        track_model.reference.total_length_m,
+    )
     segment_statistics = build_segment_statistics(passes, sessions)
     ai_context = build_ai_context(sessions, laps, segment_statistics, quality)
 
@@ -244,6 +255,8 @@ def preprocess_dataset(
     refs.append(storage.write("laps", laps))
     refs.append(storage.write("samples", samples))
     refs.append(storage.write("quality/flags", quality))
+    for logical, table in track_model.tables().items():
+        refs.append(storage.write(logical, table))
     if not setups.empty:
         refs.append(storage.write("setup/normalized", setups))
     if not setup_diffs.empty:
@@ -259,6 +272,28 @@ def preprocess_dataset(
         json_dump(output_dir / "setup" / "raw.json", setup_metadata_by_id)
     json_dump(output_dir / "summaries" / "ai_context.json", ai_context)
 
+    track_files = [track_model.reference.source_path]
+    if track_model.pit_reference is not None:
+        track_files.append(track_model.pit_reference.source_path)
+    for candidate in [
+        track_model.track_dir / "data" / "sections.ini",
+        track_model.track_dir / "data" / "drs_zones.ini",
+        track_model.track_dir / "ui" / "ui_track.json",
+    ]:
+        if candidate.exists():
+            track_files.append(candidate)
+    known_paths = {item["path"] for item in source_files}
+    for track_path in track_files:
+        if str(track_path) not in known_paths:
+            source_files.append(
+                {
+                    "path": str(track_path),
+                    "name": track_path.name,
+                    "sha256": sha256_file(track_path),
+                    "type": "ac_track_asset",
+                }
+            )
+
     dataset_id = stable_id(*(item["sha256"] for item in source_files), __version__)
     manifest = {
         "schema_version": DATASET_SCHEMA_VERSION,
@@ -268,15 +303,15 @@ def preprocess_dataset(
         "table_format": storage.format,
         "source_files": source_files,
         "processing_options": config.to_dict(),
-        "progress_method": "normalized cumulative horizontal path distance per lap",
-        "progress_source": "cumulative_distance_proxy",
+        "track": track_model.metadata,
+        "track_reference_id": track_model.reference_id,
+        "track_coordinate": "geometric arc length projected onto AC fast_lane.ai",
         "segment_definition_source": str(segment_path) if segment_path else None,
         "tables": table_manifest(refs),
         "warnings": [
             "Parquet unavailable; CSV fallback used"
             if storage.format == "csv"
             else None,
-            "Native AC normalized spline position is not present in parsed replay data",
             "ABS activity events are spectral candidates; observed frequencies may be aliased by the replay sample rate",
             "TC activity events are spectral candidates; direct torque cut is unavailable and sessions without driven_wheels retain four-wheel candidates marked unknown",
         ],

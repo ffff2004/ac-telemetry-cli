@@ -1,4 +1,5 @@
 {
+  "track": "/path/to/assettocorsa/content/tracks/spa",
   "segments": "spa_segments.json",
   "sessions": [
     {

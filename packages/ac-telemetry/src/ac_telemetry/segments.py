@@ -4,16 +4,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .util import json_load
+from .config import ProcessingConfig
+from .util import contiguous_true_runs, json_load
 
-SUPPORTED_COORDINATES = {"actual_distance_m", "normalized_progress"}
+SUPPORTED_COORDINATES = {"track_s_m", "track_progress"}
 
 
 def load_segment_definitions(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
     data = json_load(path)
-    coordinate = data.get("coordinate", "actual_distance_m")
+    coordinate = data.get("coordinate", "track_s_m")
     if coordinate not in SUPPORTED_COORDINATES:
         raise ValueError(
             f"Unsupported segment coordinate {coordinate!r}; expected one of {sorted(SUPPORTED_COORDINATES)}"
@@ -23,34 +24,138 @@ def load_segment_definitions(path: Path | None) -> dict[str, Any] | None:
     return data
 
 
-def _segment_mask(
-    g: pd.DataFrame, start: float, end: float, coordinate: str
-) -> pd.Series:
-    column = "actual_distance_m" if coordinate == "actual_distance_m" else "progress"
-    values = g[column]
-    if start <= end:
-        return values.ge(start) & values.le(end)
-    return values.ge(start) | values.le(end)
+def _to_m(value: float, coordinate: str, track_length_m: float) -> float:
+    return value * track_length_m if coordinate == "track_progress" else value
 
 
-def _first_value(segment: pd.DataFrame, mask: pd.Series, column: str) -> float:
-    found = segment.loc[mask, column]
-    return float(found.iloc[0]) if len(found) else np.nan
+def _crossing(
+    lap: pd.DataFrame,
+    target_wrapped_m: float,
+    track_length_m: float,
+) -> tuple[int, int, float] | None:
+    s = lap["track_s_unwrapped_m"].to_numpy(float)
+    if len(s) < 2 or not np.isfinite(s).any():
+        return None
+    lo = int(np.floor((np.nanmin(s) - target_wrapped_m) / track_length_m)) - 1
+    hi = int(np.ceil((np.nanmax(s) - target_wrapped_m) / track_length_m)) + 1
+    for cycle in range(lo, hi + 1):
+        target = target_wrapped_m + cycle * track_length_m
+        for i in range(len(s) - 1):
+            a, b = s[i], s[i + 1]
+            if not np.isfinite(a) or not np.isfinite(b):
+                continue
+            if a <= target <= b and b - a > 1e-9:
+                return i, i + 1, float((target - a) / (b - a))
+    return None
 
 
-def _last_value(segment: pd.DataFrame, mask: pd.Series, column: str) -> float:
-    found = segment.loc[mask, column]
-    return float(found.iloc[-1]) if len(found) else np.nan
+def _interpolate_numeric(a: Any, b: Any, alpha: float) -> float:
+    try:
+        av, bv = float(a), float(b)
+    except TypeError, ValueError:
+        return np.nan
+    if not np.isfinite(av) or not np.isfinite(bv):
+        return np.nan
+    return av + alpha * (bv - av)
+
+
+def _state_at(
+    lap: pd.DataFrame,
+    target_wrapped_m: float,
+    track_length_m: float,
+) -> dict[str, Any] | None:
+    crossing = _crossing(lap, target_wrapped_m, track_length_m)
+    if crossing is None:
+        return None
+    i, j, alpha = crossing
+    first, second = lap.iloc[i], lap.iloc[j]
+    numeric = [
+        "lap_time_s",
+        "speed_kmh",
+        "throttle",
+        "brake_n",
+        "rpm",
+        "fuel",
+        "steerAngle",
+        "lateral_offset_m",
+        "velocity_cross_track_ms",
+        "velocity_heading_error_rad",
+        "track_long_g",
+        "track_lat_g",
+        "path_distance_3d_m",
+    ]
+    state: dict[str, Any] = {
+        name: _interpolate_numeric(first.get(name), second.get(name), alpha)
+        for name in numeric
+    }
+    state["gear_physical"] = int(
+        first["gear_physical"] if alpha < 0.5 else second["gear_physical"]
+    )
+    state["sample_before"] = int(first["sample_index"])
+    state["sample_after"] = int(second["sample_index"])
+    return state
+
+
+def _main_braking_run(
+    segment: pd.DataFrame, minimum_index: int
+) -> tuple[int, int] | None:
+    mask = segment["is_braking"].fillna(False).to_numpy(bool)
+    runs = contiguous_true_runs(mask)
+    if not runs:
+        return None
+    candidates = [run for run in runs if run[0] <= minimum_index] or runs
+    return max(
+        candidates,
+        key=lambda run: float(
+            (
+                segment.iloc[run[0] : run[1] + 1]["brake_n"]
+                * segment.iloc[run[0] : run[1] + 1]["dt_s"]
+            ).sum()
+        ),
+    )
+
+
+def _full_throttle_commit_index(
+    segment: pd.DataFrame, start: int, config: ProcessingConfig
+) -> int | None:
+    mask = segment["is_full_throttle"].fillna(False).to_numpy(bool).copy()
+    dt = segment["dt_s"].to_numpy(float)
+    for gap_start, gap_end in contiguous_true_runs(~mask):
+        if gap_start == 0 or gap_end == len(mask) - 1:
+            continue
+        if (
+            float(dt[gap_start : gap_end + 1].sum())
+            <= config.full_throttle_commit_gap_s
+        ):
+            mask[gap_start : gap_end + 1] = True
+    for run_start, run_end in contiguous_true_runs(mask):
+        if run_end < start:
+            continue
+        onset = max(run_start, start)
+        if float(dt[onset : run_end + 1].sum()) >= config.full_throttle_commit_min_s:
+            return onset
+    return None
+
+
+def _steering_reversals(values: np.ndarray, threshold: float) -> int:
+    significant = values[np.abs(values) >= threshold]
+    if len(significant) < 2:
+        return 0
+    signs = np.sign(significant)
+    compressed = signs[np.r_[True, signs[1:] != signs[:-1]]]
+    return max(0, len(compressed) - 1)
 
 
 def segment_passes(
     samples: pd.DataFrame,
     laps: pd.DataFrame,
     definitions: dict[str, Any] | None,
+    config: ProcessingConfig,
+    track_length_m: float,
 ) -> pd.DataFrame:
     if definitions is None:
         return pd.DataFrame()
-    coordinate = definitions.get("coordinate", "actual_distance_m")
+    coordinate = definitions.get("coordinate", "track_s_m")
     rows: list[dict[str, Any]] = []
     lap_lookup = laps.set_index("lap_id", drop=False)
 
@@ -63,87 +168,148 @@ def segment_passes(
             expanded.append(item)
 
     for lap_id, original in samples.groupby("lap_id", sort=False):
-        g = original.sort_values("sample_index")
+        lap = original.sort_values("sample_index").reset_index(drop=True)
+        if lap_id not in lap_lookup.index:
+            continue
+        lap_info = lap_lookup.loc[lap_id]
         for definition in expanded:
-            start = float(definition["start"])
-            end = float(definition["end"])
-            mask = _segment_mask(g, start, end, coordinate)
-            segment = g.loc[mask]
+            start_m = (
+                _to_m(float(definition["start"]), coordinate, track_length_m)
+                % track_length_m
+            )
+            end_m = (
+                _to_m(float(definition["end"]), coordinate, track_length_m)
+                % track_length_m
+            )
+            entry = _state_at(lap, start_m, track_length_m)
+            exit_state = _state_at(lap, end_m, track_length_m)
+            if entry is None or exit_state is None:
+                continue
+            start_time = float(entry["lap_time_s"])
+            end_time = float(exit_state["lap_time_s"])
+            if end_time <= start_time:
+                continue
+            segment = lap[
+                (lap["lap_time_s"] >= start_time) & (lap["lap_time_s"] <= end_time)
+            ].copy()
             if len(segment) < 2:
                 continue
-            coordinate_column = (
-                "actual_distance_m" if coordinate == "actual_distance_m" else "progress"
+            segment = segment.reset_index(drop=True)
+            min_index = int(segment["speed_kmh"].idxmin())
+            minimum = segment.iloc[min_index]
+            braking = _main_braking_run(segment, min_index)
+            throttle_after_min = segment.iloc[min_index:]
+            pickup_candidates = throttle_after_min.index[
+                throttle_after_min["throttle"] >= config.throttle_event_threshold
+            ]
+            pickup_index = int(pickup_candidates[0]) if len(pickup_candidates) else None
+            commit_index = _full_throttle_commit_index(segment, min_index, config)
+
+            if braking is None:
+                brake_start_s = brake_end_s = np.nan
+                brake_duration_s = 0.0
+                peak_brake = float(segment["brake_n"].max())
+                brake_impulse = 0.0
+            else:
+                b0, b1 = braking
+                brake_segment = segment.iloc[b0 : b1 + 1]
+                brake_start_s = float(brake_segment["track_s_m"].iloc[0])
+                brake_end_s = float(brake_segment["track_s_m"].iloc[-1])
+                brake_duration_s = float(
+                    brake_segment.loc[brake_segment["is_braking"], "dt_s"].sum()
+                )
+                peak_brake = float(brake_segment["brake_n"].max())
+                brake_impulse = float(
+                    (brake_segment["brake_n"] * brake_segment["dt_s"]).sum()
+                )
+
+            reference_arc = (end_m - start_m) % track_length_m
+            if reference_arc <= 1e-9:
+                reference_arc = track_length_m
+            path_length = float(
+                exit_state["path_distance_3d_m"] - entry["path_distance_3d_m"]
             )
-            min_speed_idx = segment["speed_kmh"].idxmin()
-            brake_mask = segment["is_braking"]
-            throttle_mask = segment["throttle"] >= 0.05
-            full_mask = segment["is_full_throttle"]
-            path_dx = segment["position.x"].diff().fillna(0)
-            path_dz = segment["position.z"].diff().fillna(0)
-            path_length = float(np.hypot(path_dx, path_dz).sum())
-            lap_info = lap_lookup.loc[lap_id]
-            rows.append(
-                {
-                    "session_id": segment["session_id"].iloc[0],
-                    "lap_id": lap_id,
-                    "source_lap_number": int(segment["source_lap_number"].iloc[0]),
-                    "segment_id": definition.get("id"),
-                    "segment_name": definition.get("name", definition.get("id")),
-                    "parent_segment_id": definition.get("parent_id"),
-                    "coordinate": coordinate,
-                    "segment_start": start,
-                    "segment_end": end,
-                    "sample_count": len(segment),
-                    "segment_time_s": float(
-                        segment["lap_time_s"].iloc[-1] - segment["lap_time_s"].iloc[0]
-                    ),
-                    "entry_speed_kmh": float(segment["speed_kmh"].iloc[0]),
-                    "exit_speed_kmh": float(segment["speed_kmh"].iloc[-1]),
-                    "minimum_speed_kmh": float(segment["speed_kmh"].min()),
-                    "minimum_speed_position": float(
-                        segment.loc[min_speed_idx, coordinate_column]
-                    ),
-                    "brake_start_position": _first_value(
-                        segment, brake_mask, coordinate_column
-                    ),
-                    "brake_end_position": _last_value(
-                        segment, brake_mask, coordinate_column
-                    ),
-                    "brake_duration_s": float(segment.loc[brake_mask, "dt_s"].sum()),
-                    "peak_brake": float(segment["brake_n"].max()),
-                    "brake_impulse_proxy_s": float(
-                        (segment["brake_n"] * segment["dt_s"]).sum()
-                    ),
-                    "throttle_pickup_position": _first_value(
-                        segment, throttle_mask, coordinate_column
-                    ),
-                    "full_throttle_position": _first_value(
-                        segment, full_mask, coordinate_column
-                    ),
-                    "coasting_time_s": float(
-                        segment.loc[segment["is_coasting"], "dt_s"].sum()
-                    ),
-                    "partial_throttle_time_s": float(
-                        segment.loc[segment["is_partial_throttle"], "dt_s"].sum()
-                    ),
-                    "rear_slip_integral": float(
-                        (
-                            segment["rear_slip_ratio_max"].clip(lower=0)
-                            * segment["dt_s"]
-                        ).sum()
-                    ),
-                    "max_abs_steer": float(segment["steerAngle"].abs().max()),
-                    "steering_sign_changes": int(
-                        np.count_nonzero(
-                            np.diff(np.sign(segment["steerAngle"].fillna(0).to_numpy()))
-                            != 0
-                        )
-                    ),
-                    "actual_path_length_m": path_length,
-                    "is_complete_lap": bool(lap_info["is_complete"]),
-                    "is_valid_lap": bool(lap_info["is_valid"]),
-                    "quality_score": 1.0 if bool(lap_info["is_valid"]) else 0.5,
-                    "valid_for_comparison": bool(lap_info["is_valid"]),
-                }
-            )
+            if path_length < 0:
+                path_length = float(
+                    segment[["position.x", "position.y", "position.z"]]
+                    .diff()
+                    .fillna(0.0)
+                    .pow(2)
+                    .sum(axis=1)
+                    .pow(0.5)
+                    .sum()
+                )
+
+            row = {
+                "session_id": segment["session_id"].iloc[0],
+                "lap_id": lap_id,
+                "source_lap_number": int(segment["source_lap_number"].iloc[0]),
+                "segment_id": definition.get("id"),
+                "segment_name": definition.get("name", definition.get("id")),
+                "parent_segment_id": definition.get("parent_id"),
+                "coordinate": coordinate,
+                "segment_start_track_s_m": start_m,
+                "segment_end_track_s_m": end_m,
+                "sample_count": len(segment),
+                "segment_time_s": end_time - start_time,
+                "entry_speed_kmh": entry["speed_kmh"],
+                "exit_speed_kmh": exit_state["speed_kmh"],
+                "minimum_speed_kmh": float(minimum["speed_kmh"]),
+                "minimum_speed_track_s_m": float(minimum["track_s_m"]),
+                "brake_onset_track_s_m": brake_start_s,
+                "brake_release_track_s_m": brake_end_s,
+                "brake_duration_s": brake_duration_s,
+                "peak_brake": peak_brake,
+                "brake_impulse_proxy_s": brake_impulse,
+                "throttle_pickup_track_s_m": float(
+                    segment.loc[pickup_index, "track_s_m"]
+                )
+                if pickup_index is not None
+                else np.nan,
+                "full_throttle_commit_track_s_m": float(
+                    segment.loc[commit_index, "track_s_m"]
+                )
+                if commit_index is not None
+                else np.nan,
+                "coasting_time_s": float(
+                    segment.loc[segment["is_coasting"], "dt_s"].sum()
+                ),
+                "partial_throttle_time_s": float(
+                    segment.loc[segment["is_partial_throttle"], "dt_s"].sum()
+                ),
+                "rear_slip_integral": float(
+                    (segment["rear_slip_ratio_max"].clip(0) * segment["dt_s"]).sum()
+                ),
+                "max_abs_steer": float(segment["steerAngle"].abs().max()),
+                "steering_reversal_count": _steering_reversals(
+                    segment["steerAngle"].fillna(0).to_numpy(float),
+                    config.steering_reversal_threshold,
+                ),
+                "actual_path_length_m": path_length,
+                "reference_arc_length_m": reference_arc,
+                "path_excess_m": path_length - reference_arc,
+                "entry_lateral_offset_m": entry["lateral_offset_m"],
+                "exit_lateral_offset_m": exit_state["lateral_offset_m"],
+                "minimum_speed_lateral_offset_m": float(minimum["lateral_offset_m"]),
+                "entry_velocity_cross_track_ms": entry["velocity_cross_track_ms"],
+                "exit_velocity_cross_track_ms": exit_state["velocity_cross_track_ms"],
+                "entry_heading_error_rad": entry["velocity_heading_error_rad"],
+                "exit_heading_error_rad": exit_state["velocity_heading_error_rad"],
+                "entry_gear": entry["gear_physical"],
+                "exit_gear": exit_state["gear_physical"],
+                "entry_rpm": entry["rpm"],
+                "exit_rpm": exit_state["rpm"],
+                "entry_throttle": entry["throttle"],
+                "exit_throttle": exit_state["throttle"],
+                "entry_brake": entry["brake_n"],
+                "exit_brake": exit_state["brake_n"],
+                "entry_steer": entry["steerAngle"],
+                "exit_steer": exit_state["steerAngle"],
+                "peak_abs_track_lat_g": float(segment["track_lat_g"].abs().max()),
+                "minimum_track_long_g": float(segment["track_long_g"].min()),
+                "is_complete_lap": bool(lap_info["is_complete"]),
+                "is_valid_lap": bool(lap_info["is_valid"]),
+                "valid_for_comparison": bool(lap_info["is_valid"]),
+            }
+            rows.append(row)
     return pd.DataFrame(rows)

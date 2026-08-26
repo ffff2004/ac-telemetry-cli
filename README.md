@@ -11,8 +11,13 @@ This repository is a uv workspace containing two related Python packages:
 The application flow is:
 
 ```text
-.acreplay → ac-replay-parser → typed replay objects → ac-telemetry → dataset
+.acreplay ─→ ac-replay-parser ─→ typed replay objects ─┐
+                                                       ├→ ac-telemetry → dataset
+AC track ─→ fast_lane.ai / pit_lane.ai ─→ TrackModel ─┘
 ```
+
+`TrackModel` supplies the canonical circuit coordinate. Vehicle path distance is
+kept separately and is never used as a proxy for track position.
 
 Replay CSV is not an input format for `ac-telemetry`. Generated datasets may
 still use CSV or Parquet storage, and individual tables can be exported as

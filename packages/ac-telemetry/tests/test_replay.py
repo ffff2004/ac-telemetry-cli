@@ -3,6 +3,8 @@ from pathlib import Path
 
 from ac_telemetry.config import ProcessingConfig
 from ac_telemetry.replay import inspect_replay, load_replay
+from ac_telemetry.track import TrackModel
+from track_fixture import make_track
 
 GENERATOR_PATH = (
     Path(__file__).parents[2]
@@ -27,7 +29,8 @@ def test_load_replay_expands_cars_into_sessions(tmp_path: Path) -> None:
     path = tmp_path / "fixture.acreplay"
     path.write_bytes(_make_replay(["Alice", "Bob"], 3))
 
-    results = load_replay(path, ProcessingConfig())
+    track = TrackModel.load(make_track(tmp_path / "track"))
+    results = load_replay(path, ProcessingConfig(), track)
 
     assert [result.metadata["driver_name"] for result in results] == ["Alice", "Bob"]
     assert [len(result.samples) for result in results] == [3, 3]

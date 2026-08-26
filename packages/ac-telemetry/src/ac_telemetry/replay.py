@@ -8,6 +8,7 @@ import pandas as pd
 from ac_replay_parser import ParsedCar, ParsedReplay, parse_replay_data
 
 from .config import ProcessingConfig
+from .track import TrackModel
 from .util import parse_datetime_from_ac_filename, sha256_file, stable_id
 
 WHEELS = {"fl": "wheelFL", "fr": "wheelFR", "rl": "wheelRL", "rr": "wheelRR"}
@@ -92,11 +93,48 @@ def _car_to_raw(car: ParsedCar) -> pd.DataFrame:
             "gas": frame.gas,
             "brake": frame.brake,
             "boost": frame.boost,
+            "damageFrontDeformation": frame.damage_front_deformation,
+            "damageFront": frame.damage_front,
+            "damageRear": frame.damage_rear,
+            "damageLeft": frame.damage_left,
+            "damageRight": frame.damage_right,
+            "carDirt": frame.dirt,
+            "engineHealth": frame.engine_health,
+            "statusRaw": frame.status.raw,
+            "statusLights": frame.status.lights,
+            "statusHorn": frame.status.horn,
+            "statusCameraDirection": frame.status.camera_direction,
+            "statusGearboxBeingDamaged": frame.status.gearbox_being_damaged,
+            "statusUnknown": frame.unknown,
+            "statusUnknown2": frame.unknown2,
         }
         if frame_index < len(car.extra_frames):
-            row["clutch"] = car.extra_frames[frame_index].clutch
+            extra = car.extra_frames[frame_index]
+            row.update(
+                {
+                    "clutch": extra.clutch,
+                    "handbrake": extra.handbrake,
+                    "wipers": extra.wipers,
+                    "turnSignals": extra.turn_signals,
+                    "lowBeams": extra.low_beams,
+                    "extraStatusRaw": extra.raw_status,
+                }
+            )
+            for index, value in enumerate(extra.extra_options):
+                row[f"extraOption{index}"] = value
         else:
-            row["clutch"] = np.nan
+            row.update(
+                {
+                    "clutch": np.nan,
+                    "handbrake": np.nan,
+                    "wipers": np.nan,
+                    "turnSignals": np.nan,
+                    "lowBeams": pd.NA,
+                    "extraStatusRaw": np.nan,
+                }
+            )
+            for index in range(10):
+                row[f"extraOption{index}"] = pd.NA
 
         for short, wheel in zip(WHEELS, frame.wheels, strict=True):
             prefix = WHEELS[short]
@@ -105,10 +143,21 @@ def _car_to_raw(car: ParsedCar) -> pd.DataFrame:
                     f"{prefix}.angularVelocity": wheel.angular_velocity,
                     f"{prefix}.slipAngle": wheel.slip_angle,
                     f"{prefix}.slipRatio": wheel.slip_ratio,
+                    f"{prefix}.ndSlip": wheel.nd_slip,
                     f"{prefix}.load": wheel.load,
+                    f"{prefix}.dirt": wheel.dirt,
+                    f"{prefix}.staticPosition.x": wheel.static_position.x,
+                    f"{prefix}.staticPosition.y": wheel.static_position.y,
+                    f"{prefix}.staticPosition.z": wheel.static_position.z,
+                    f"{prefix}.staticRotation.x": wheel.static_rotation.x,
+                    f"{prefix}.staticRotation.y": wheel.static_rotation.y,
+                    f"{prefix}.staticRotation.z": wheel.static_rotation.z,
                     f"{prefix}.position.x": wheel.position.x,
                     f"{prefix}.position.y": wheel.position.y,
                     f"{prefix}.position.z": wheel.position.z,
+                    f"{prefix}.rotation.x": wheel.rotation.x,
+                    f"{prefix}.rotation.y": wheel.rotation.y,
+                    f"{prefix}.rotation.z": wheel.rotation.z,
                 }
             )
         rows.append(row)
@@ -157,12 +206,29 @@ def _derive_sample_channels(
         "gas",
         "brake",
         "clutch",
+        "handbrake",
+        "wipers",
+        "turnSignals",
+        "extraStatusRaw",
         "steerAngle",
         "gear",
         "rpm",
         "fuel",
         "drivetrainSpeed",
         "fuelPerLap",
+        "boost",
+        "bodyworkNoise",
+        "damageFrontDeformation",
+        "damageFront",
+        "damageRear",
+        "damageLeft",
+        "damageRight",
+        "carDirt",
+        "engineHealth",
+        "statusRaw",
+        "statusCameraDirection",
+        "statusUnknown",
+        "statusUnknown2",
     ]
     for prefix in WHEELS.values():
         numeric_columns.extend(
@@ -170,10 +236,13 @@ def _derive_sample_channels(
                 f"{prefix}.angularVelocity",
                 f"{prefix}.slipAngle",
                 f"{prefix}.slipRatio",
+                f"{prefix}.ndSlip",
                 f"{prefix}.load",
-                f"{prefix}.position.x",
-                f"{prefix}.position.y",
-                f"{prefix}.position.z",
+                f"{prefix}.dirt",
+                *(f"{prefix}.staticPosition.{axis}" for axis in "xyz"),
+                *(f"{prefix}.staticRotation.{axis}" for axis in "xyz"),
+                *(f"{prefix}.position.{axis}" for axis in "xyz"),
+                *(f"{prefix}.rotation.{axis}" for axis in "xyz"),
             ]
         )
     converted = _numeric(df, numeric_columns)
@@ -201,7 +270,6 @@ def _derive_sample_channels(
     df["clutch_raw"] = df["clutch"]
     df["throttle"] = (df["gas"] / 255.0).clip(0, 1).fillna(0)
     df["brake_n"] = (df["brake"] / 255.0).clip(0, 1).fillna(0)
-    # Most replay exports use 0..255 clutch; tolerate an already-normalized channel.
     clutch_max = float(df["clutch"].max(skipna=True))
     df["clutch_n"] = (
         (
@@ -220,43 +288,54 @@ def _derive_sample_channels(
     df["speed_ms"] = speed_ms
     df["speed_kmh"] = speed_ms * 3.6
 
-    # Derivatives. The longitudinal axis follows the horizontal velocity vector,
-    # which is stable even when replay body rotations are encoded unexpectedly.
-    vx = df["velocity.x"].to_numpy(float)
-    vz = df["velocity.z"].to_numpy(float)
     dt_arr = df["dt_s"].to_numpy(float)
-    ax = np.r_[0.0, np.diff(vx) / np.maximum(dt_arr[1:], 1e-6)]
-    az = np.r_[0.0, np.diff(vz) / np.maximum(dt_arr[1:], 1e-6)]
-    horiz_speed = np.hypot(vx, vz)
-    ux = np.divide(vx, horiz_speed, out=np.zeros_like(vx), where=horiz_speed > 1.0)
-    uz = np.divide(vz, horiz_speed, out=np.zeros_like(vz), where=horiz_speed > 1.0)
-    long_accel = ax * ux + az * uz
-    lat_accel = ux * az - uz * ax
-    df["accel_world_x_ms2"] = ax
-    df["accel_world_z_ms2"] = az
-    df["long_accel_ms2"] = long_accel
-    df["lat_accel_ms2"] = lat_accel
-    df["long_g"] = long_accel / 9.80665
-    df["lat_g"] = lat_accel / 9.80665
+    acceleration = np.zeros_like(velocity)
+    if len(velocity) > 1:
+        acceleration[1:] = np.diff(velocity, axis=0) / np.maximum(
+            dt_arr[1:, None], 1e-6
+        )
+    df["accel_world_x_ms2"] = acceleration[:, 0]
+    df["accel_world_y_ms2"] = acceleration[:, 1]
+    df["accel_world_z_ms2"] = acceleration[:, 2]
 
-    if "rotation.y" in df:
-        yaw = np.unwrap(df["rotation.y"].ffill().fillna(0).to_numpy(float))
-        yaw_rate = np.r_[0.0, np.diff(yaw) / np.maximum(dt_arr[1:], 1e-6)]
-        df["yaw_rad"] = yaw
-        df["yaw_rate_rad_s"] = yaw_rate
-    else:
-        df["yaw_rad"] = np.nan
-        df["yaw_rate_rad_s"] = np.nan
+    # These are path-relative, not chassis-relative. Naming the coordinate system is
+    # deliberate: replay rotation semantics are not sufficiently proven to infer body yaw.
+    vx = velocity[:, 0]
+    vz = velocity[:, 2]
+    horizontal_speed = np.hypot(vx, vz)
+    ux = np.divide(
+        vx, horizontal_speed, out=np.zeros_like(vx), where=horizontal_speed > 1.0
+    )
+    uz = np.divide(
+        vz, horizontal_speed, out=np.zeros_like(vz), where=horizontal_speed > 1.0
+    )
+    path_tangent_accel = acceleration[:, 0] * ux + acceleration[:, 2] * uz
+    path_normal_accel = ux * acceleration[:, 2] - uz * acceleration[:, 0]
+    df["path_tangent_accel_ms2"] = path_tangent_accel
+    df["path_normal_accel_ms2"] = path_normal_accel
+    df["path_tangent_g"] = path_tangent_accel / 9.80665
+    df["path_normal_g"] = path_normal_accel / 9.80665
+    velocity_heading = np.arctan2(vx, vz)
+    df["velocity_heading_raw_rad"] = velocity_heading
+    df["velocity_heading_rate_rad_s"] = np.r_[
+        0.0,
+        np.diff(np.unwrap(velocity_heading)) / np.maximum(dt_arr[1:], 1e-6),
+    ]
 
-    df["actual_distance_m"] = 0.0
-    df["normalized_actual_distance"] = np.nan
+    df["path_distance_2d_m"] = 0.0
+    df["path_distance_3d_m"] = 0.0
     for lap_id, indices in df.groupby("lap_id", sort=False).groups.items():
         g = df.loc[indices]
-        dx = g["position.x"].diff().fillna(0.0)
-        dz = g["position.z"].diff().fillna(0.0)
-        step = np.hypot(dx, dz)
-        jump_mask = step > config.position_jump_threshold_m
-        if jump_mask.any():
+        delta = (
+            g[["position.x", "position.y", "position.z"]]
+            .diff()
+            .fillna(0.0)
+            .to_numpy(float)
+        )
+        step_2d = np.hypot(delta[:, 0], delta[:, 2])
+        step_3d = np.linalg.norm(delta, axis=1)
+        jump_mask = step_3d > config.position_jump_threshold_m
+        if bool(jump_mask.any()):
             for idx in g.index[jump_mask]:
                 flags.append(
                     {
@@ -267,21 +346,13 @@ def _derive_sample_channels(
                         "sample_start": int(df.at[idx, "sample_index"]),
                         "sample_end": int(df.at[idx, "sample_index"]),
                         "message": f"Position step exceeded {config.position_jump_threshold_m:g} m",
-                        "affected_channels": "position.x,position.z",
+                        "affected_channels": "position.x,position.y,position.z",
                     }
                 )
-        step = step.where(~jump_mask, 0.0)
-        distance = step.cumsum().to_numpy(float)
-        df.loc[indices, "actual_distance_m"] = distance
-        total = float(distance[-1]) if len(distance) else 0.0
-        if total > 0:
-            df.loc[indices, "normalized_actual_distance"] = distance / total
-
-    df["progress"] = df["normalized_actual_distance"]
-    df["progress_source"] = "cumulative_distance_proxy"
-    df["progress_confidence"] = np.where(
-        df["normalized_actual_distance"].notna(), 0.55, 0.0
-    )
+        step_2d = np.where(jump_mask, 0.0, step_2d)
+        step_3d = np.where(jump_mask, 0.0, step_3d)
+        df.loc[indices, "path_distance_2d_m"] = np.cumsum(step_2d)
+        df.loc[indices, "path_distance_3d_m"] = np.cumsum(step_3d)
 
     # Gear coding observed in these exports: 1 is neutral, physical gear is raw-1.
     df["gear_raw"] = df["gear"].astype("Int64")
@@ -309,11 +380,19 @@ def _derive_sample_channels(
             f"{prefix}.angularVelocity": f"wheel_{short}_angular_velocity",
             f"{prefix}.slipAngle": f"wheel_{short}_slip_angle",
             f"{prefix}.slipRatio": f"wheel_{short}_slip_ratio",
+            f"{prefix}.ndSlip": f"wheel_{short}_nd_slip",
             f"{prefix}.load": f"wheel_{short}_load",
-            f"{prefix}.position.x": f"wheel_{short}_position_x",
-            f"{prefix}.position.y": f"wheel_{short}_position_y",
-            f"{prefix}.position.z": f"wheel_{short}_position_z",
+            f"{prefix}.dirt": f"wheel_{short}_dirt",
         }
+        for family in ("staticPosition", "staticRotation", "position", "rotation"):
+            snake = {
+                "staticPosition": "static_position",
+                "staticRotation": "static_rotation",
+                "position": "position",
+                "rotation": "rotation",
+            }[family]
+            for axis in "xyz":
+                rename[f"{prefix}.{family}.{axis}"] = f"wheel_{short}_{snake}_{axis}"
         for source, target in rename.items():
             df[target] = df[source] if source in df else np.nan
 
@@ -337,10 +416,6 @@ def _derive_sample_channels(
     df["right_total_load"] = df[["wheel_fr_load", "wheel_rr_load"]].sum(
         axis=1, min_count=1
     )
-
-    # No pit-lane or track-valid channel exists in this replay export. Unknown is not False.
-    df["is_in_pit"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
-    df["is_off_track_candidate"] = pd.Series(pd.NA, index=df.index, dtype="boolean")
     df["is_valid_sample"] = df["lap_time_s"].notna() & df["speed_kmh"].notna()
 
     standard_columns = [
@@ -356,24 +431,25 @@ def _derive_sample_channels(
         "position.x",
         "position.y",
         "position.z",
-        "actual_distance_m",
-        "normalized_actual_distance",
-        "progress",
-        "progress_source",
-        "progress_confidence",
+        "rotation.x",
+        "rotation.y",
+        "rotation.z",
         "velocity.x",
         "velocity.y",
         "velocity.z",
         "speed_ms",
         "speed_kmh",
         "accel_world_x_ms2",
+        "accel_world_y_ms2",
         "accel_world_z_ms2",
-        "long_accel_ms2",
-        "lat_accel_ms2",
-        "long_g",
-        "lat_g",
-        "yaw_rad",
-        "yaw_rate_rad_s",
+        "path_tangent_accel_ms2",
+        "path_normal_accel_ms2",
+        "path_tangent_g",
+        "path_normal_g",
+        "velocity_heading_raw_rad",
+        "velocity_heading_rate_rad_s",
+        "path_distance_2d_m",
+        "path_distance_3d_m",
         "throttle_raw",
         "brake_raw",
         "clutch_raw",
@@ -387,6 +463,28 @@ def _derive_sample_channels(
         "drivetrainSpeed",
         "fuel",
         "fuelPerLap",
+        "boost",
+        "bodyworkNoise",
+        "damageFrontDeformation",
+        "damageFront",
+        "damageRear",
+        "damageLeft",
+        "damageRight",
+        "carDirt",
+        "engineHealth",
+        "statusRaw",
+        "statusLights",
+        "statusHorn",
+        "statusCameraDirection",
+        "statusGearboxBeingDamaged",
+        "statusUnknown",
+        "statusUnknown2",
+        "handbrake",
+        "wipers",
+        "turnSignals",
+        "lowBeams",
+        "extraStatusRaw",
+        *(f"extraOption{index}" for index in range(10)),
     ]
     for short in WHEELS:
         standard_columns.extend(
@@ -394,10 +492,13 @@ def _derive_sample_channels(
                 f"wheel_{short}_angular_velocity",
                 f"wheel_{short}_slip_angle",
                 f"wheel_{short}_slip_ratio",
+                f"wheel_{short}_nd_slip",
                 f"wheel_{short}_load",
-                f"wheel_{short}_position_x",
-                f"wheel_{short}_position_y",
-                f"wheel_{short}_position_z",
+                f"wheel_{short}_dirt",
+                *(f"wheel_{short}_static_position_{axis}" for axis in "xyz"),
+                *(f"wheel_{short}_static_rotation_{axis}" for axis in "xyz"),
+                *(f"wheel_{short}_position_{axis}" for axis in "xyz"),
+                *(f"wheel_{short}_rotation_{axis}" for axis in "xyz"),
             ]
         )
     standard_columns.extend(
@@ -416,8 +517,6 @@ def _derive_sample_channels(
             "is_braking",
             "is_coasting",
             "is_brake_throttle_overlap",
-            "is_in_pit",
-            "is_off_track_candidate",
             "is_valid_sample",
         ]
     )
@@ -430,6 +529,7 @@ def _build_laps(
     raw: pd.DataFrame,
     session_id: str,
     config: ProcessingConfig,
+    track_model: TrackModel,
 ) -> pd.DataFrame:
     next_segment_first: dict[int, pd.Series] = {}
     grouped_raw = raw.groupby("_lap_segment_index", sort=True)
@@ -466,11 +566,28 @@ def _build_laps(
         )
         fragment = bool(not complete and (segment_index == 0 or repeated_source_lap))
         moving = g[g["is_moving"]]
-        denominator = max(len(moving), 1)
+        moving_time_s = float(moving["dt_s"].sum())
         lap_time_s = official_lap_time_s or float(g["lap_time_s"].max())
         fuel = g["fuel"]
         start_fuel = float(fuel.iloc[0]) if bool(fuel.notna().any()) else np.nan
         end_fuel = float(fuel.iloc[-1]) if bool(fuel.notna().any()) else np.nan
+
+        pit_mask = g["is_in_pit"].fillna(False).astype(bool)
+        pit_time_s = float(g.loc[pit_mask, "dt_s"].sum())
+        first_window = g["lap_time_s"] <= min(2.0, max(lap_time_s, 0.0))
+        last_window = g["lap_time_s"] >= max(0.0, lap_time_s - 2.0)
+        starts_in_pit = bool((pit_mask & first_window).any())
+        ends_in_pit = bool((pit_mask & last_window).any())
+        is_pit_lap = bool(pit_time_s >= 0.30)
+        median_projection_error = float(g["track_projection_distance_3d_m"].median())
+        alignment_good = (
+            median_projection_error <= config.track_projection_quality_threshold_m
+        )
+        is_valid = bool(complete and not fragment and not is_pit_lap and alignment_good)
+
+        path_2d = float(g["path_distance_2d_m"].max())
+        path_3d = float(g["path_distance_3d_m"].max())
+        reference_length = track_model.reference.total_length_m
         row: dict[str, Any] = {
             "lap_id": lap_id,
             "session_id": session_id,
@@ -479,10 +596,10 @@ def _build_laps(
             "lap_time_s": lap_time_s,
             "official_lap_time_s": official_lap_time_s,
             "is_complete": complete,
-            "is_valid": bool(complete and not fragment),
-            "is_out_lap": pd.NA,
-            "is_in_lap": pd.NA,
-            "is_pit_lap": pd.NA,
+            "is_valid": is_valid,
+            "is_out_lap": bool(complete and starts_in_pit),
+            "is_in_lap": bool(complete and ends_in_pit),
+            "is_pit_lap": is_pit_lap,
             "is_replay_fragment": fragment,
             "start_sample": int(g["sample_index"].iloc[0]),
             "end_sample": int(g["sample_index"].iloc[-1]),
@@ -492,7 +609,10 @@ def _build_laps(
             "fuel_used": start_fuel - end_fuel
             if np.isfinite(start_fuel) and np.isfinite(end_fuel)
             else np.nan,
-            "actual_distance_m": float(g["actual_distance_m"].max()),
+            "path_distance_2d_m": path_2d,
+            "path_distance_3d_m": path_3d,
+            "reference_length_m": reference_length,
+            "path_excess_vs_ai_line_m": path_3d - reference_length,
             "max_speed_kmh": float(g["speed_kmh"].max()),
             "mean_speed_kmh": float(moving["speed_kmh"].mean())
             if len(moving)
@@ -501,58 +621,66 @@ def _build_laps(
             if len(moving)
             else np.nan,
             "max_rpm": float(g["rpm"].max()),
-            "full_throttle_time_s": float(g.loc[g["is_full_throttle"], "dt_s"].sum()),
-            "full_throttle_pct": 100.0
-            * float(moving["is_full_throttle"].sum())
-            / denominator,
-            "partial_throttle_time_s": float(
-                g.loc[g["is_partial_throttle"], "dt_s"].sum()
+            "pit_time_s": pit_time_s,
+            "off_track_candidate_time_s": float(
+                g.loc[g["is_off_track_candidate"].fillna(False), "dt_s"].sum()
             ),
-            "partial_throttle_pct": 100.0
-            * float(moving["is_partial_throttle"].sum())
-            / denominator,
-            "braking_time_s": float(g.loc[g["is_braking"], "dt_s"].sum()),
-            "braking_pct": 100.0 * float(moving["is_braking"].sum()) / denominator,
-            "coasting_time_s": float(g.loc[g["is_coasting"], "dt_s"].sum()),
-            "coasting_pct": 100.0 * float(moving["is_coasting"].sum()) / denominator,
-            "overlap_time_s": float(
-                g.loc[g["is_brake_throttle_overlap"], "dt_s"].sum()
+            "median_track_projection_error_m": median_projection_error,
+            "max_track_projection_error_m": float(
+                g["track_projection_distance_3d_m"].max()
             ),
-            "front_slip_integral": float(
-                (g["front_slip_ratio_min"].clip(upper=0).abs() * g["dt_s"]).sum()
-            ),
-            "rear_slip_integral": float(
-                (g["rear_slip_ratio_max"].clip(lower=0) * g["dt_s"]).sum()
-            ),
-            "rear_tire_stress_proxy": float(
-                (
-                    g["rear_slip_ratio_max"].clip(lower=0)
-                    * g["rear_total_load"].fillna(0)
-                    * g["dt_s"]
-                ).sum()
-            ),
+            "mean_abs_lateral_offset_m": float(g["lateral_offset_m"].abs().mean()),
         }
-        # Mechanical classification with explicit reasons.
+        for state, prefix in [
+            ("is_full_throttle", "full_throttle"),
+            ("is_partial_throttle", "partial_throttle"),
+            ("is_braking", "braking"),
+            ("is_coasting", "coasting"),
+            ("is_brake_throttle_overlap", "overlap"),
+        ]:
+            state_time = float(g.loc[g[state].fillna(False), "dt_s"].sum())
+            row[f"{prefix}_time_s"] = state_time
+            row[f"{prefix}_pct"] = (
+                100.0 * state_time / moving_time_s if moving_time_s > 0 else 0.0
+            )
+        row["front_slip_integral"] = float(
+            (g["front_slip_ratio_min"].clip(upper=0).abs() * g["dt_s"]).sum()
+        )
+        row["rear_slip_integral"] = float(
+            (g["rear_slip_ratio_max"].clip(lower=0) * g["dt_s"]).sum()
+        )
+        row["rear_tire_stress_proxy"] = float(
+            (
+                g["rear_slip_ratio_max"].clip(lower=0)
+                * g["rear_total_load"].fillna(0)
+                * g["dt_s"]
+            ).sum()
+        )
+
         reasons: list[str] = []
-        lap_class = "unknown"
         if fragment:
             lap_class = "fragment"
             reasons.append("replay_started_mid_lap_or_time_nonzero")
         elif not complete:
             lap_class = "incomplete"
             reasons.append("no_confirmed_next_lap_transition")
-        elif row["actual_distance_m"] < 0.9 * float(
-            samples.groupby("lap_id")["actual_distance_m"].max().median()
-        ):
-            lap_class = "pit_or_error"
-            reasons.append("path_length_short_relative_to_session")
+        elif not alignment_good:
+            lap_class = "alignment_error"
+            reasons.append("median_track_projection_error_high")
+        elif starts_in_pit:
+            lap_class = "out_lap"
+            reasons.append("pit_lane_detected_near_lap_start")
+        elif ends_in_pit:
+            lap_class = "in_lap"
+            reasons.append("pit_lane_detected_near_lap_end")
+        elif is_pit_lap:
+            lap_class = "pit_lap"
+            reasons.append("pit_lane_detected_during_lap")
         else:
-            lap_class = "unclassified_complete"
-            reasons.append("complete_lap_without_semantic_pit_channel")
+            lap_class = "valid_complete"
+            reasons.append("complete_non_pit_lap_with_track_alignment")
         row["lap_class"] = lap_class
-        row["classification_confidence"] = (
-            0.95 if lap_class in {"fragment", "incomplete"} else 0.55
-        )
+        row["classification_confidence"] = 0.95 if complete or fragment else 0.8
         row["classification_reasons"] = ";".join(reasons)
         rows.append(row)
     return pd.DataFrame(rows)
@@ -561,6 +689,7 @@ def _build_laps(
 def load_replay(
     path: Path,
     config: ProcessingConfig,
+    track_model: TrackModel,
     setup_id: str | None = None,
     session_label: str | None = None,
     driver_name: str | None = None,
@@ -602,7 +731,8 @@ def load_replay(
             samples, flags = _derive_sample_channels(
                 raw, car_metadata, session_id, config
             )
-        laps = _build_laps(samples, raw, session_id, config)
+        samples = track_model.align(samples, config)
+        laps = _build_laps(samples, raw, session_id, config, track_model)
 
         label = session_label or path.stem
         if len(replay.cars) > 1:

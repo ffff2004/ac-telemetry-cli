@@ -22,10 +22,10 @@ EVENT_INDEX_COLUMNS = [
     "end_time_s",
     "span_duration_s",
     "active_duration_s",
-    "start_distance_m",
-    "end_distance_m",
-    "start_progress",
-    "end_progress",
+    "start_track_s_m",
+    "end_track_s_m",
+    "start_track_progress",
+    "end_track_progress",
 ]
 
 RELATION_COLUMNS = [
@@ -57,10 +57,10 @@ _COMMON_INTERNAL_COLUMNS = {
     "duration_s",
     "span_duration_s",
     "active_duration_s",
-    "start_distance_m",
-    "end_distance_m",
-    "start_progress",
-    "end_progress",
+    "start_track_s_m",
+    "end_track_s_m",
+    "start_track_progress",
+    "end_track_progress",
     "_active_sample_durations",
 }
 
@@ -70,17 +70,17 @@ _REQUIRED_SAMPLE_COLUMNS = {
     "sample_index",
     "lap_time_s",
     "dt_s",
-    "actual_distance_m",
-    "progress",
+    "track_s_m",
+    "track_progress",
     "speed_kmh",
     "brake_n",
     "throttle",
     "is_braking",
     "gear_physical",
     "rpm",
-    "long_g",
+    "track_long_g",
     "steerAngle",
-    "yaw_rate_rad_s",
+    "velocity_heading_rate_rad_s",
     *(f"wheel_{wheel}_slip_ratio" for wheel in WHEELS),
     *(f"wheel_{wheel}_load" for wheel in WHEELS),
 }
@@ -231,10 +231,10 @@ def _event_base(
         "duration_s": span_duration,
         "span_duration_s": span_duration,
         "active_duration_s": float(segment.loc[active, "dt_s"].sum()),
-        "start_distance_m": float(g["actual_distance_m"].iloc[start]),
-        "end_distance_m": float(g["actual_distance_m"].iloc[end]),
-        "start_progress": float(g["progress"].iloc[start]),
-        "end_progress": float(g["progress"].iloc[end]),
+        "start_track_s_m": float(g["track_s_m"].iloc[start]),
+        "end_track_s_m": float(g["track_s_m"].iloc[end]),
+        "start_track_progress": float(g["track_progress"].iloc[start]),
+        "end_track_progress": float(g["track_progress"].iloc[end]),
         "_active_sample_durations": active_sample_durations,
     }
 
@@ -361,7 +361,9 @@ def detect_throttle(samples: pd.DataFrame, config: ProcessingConfig) -> pd.DataF
                         if len(indices_95)
                         else np.nan
                     ),
-                    "yaw_rate_at_pickup_rad_s": float(g["yaw_rate_rad_s"].iloc[start]),
+                    "velocity_heading_rate_at_pickup_rad_s": float(
+                        g["velocity_heading_rate_rad_s"].iloc[start]
+                    ),
                     "countersteer_proxy": bool(
                         np.sign(segment["steerAngle"]).nunique(dropna=True) > 1
                     ),
@@ -433,8 +435,10 @@ def detect_shifts(samples: pd.DataFrame, config: ProcessingConfig) -> pd.DataFra
                     "rpm_delta": float(
                         g["rpm"].iloc[candidate_index] - g["rpm"].iloc[before_index]
                     ),
-                    "long_g_before": float(g["long_g"].iloc[before_index]),
-                    "long_g_after": float(g["long_g"].iloc[candidate_index]),
+                    "track_long_g_before": float(g["track_long_g"].iloc[before_index]),
+                    "track_long_g_after": float(
+                        g["track_long_g"].iloc[candidate_index]
+                    ),
                     "neutral_duration_s": float(transition.loc[neutral, "dt_s"].sum()),
                 }
             )

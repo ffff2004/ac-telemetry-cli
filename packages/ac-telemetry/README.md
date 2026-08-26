@@ -32,6 +32,7 @@ ac-telemetry inspect replay.acreplay
 ```bash
 ac-telemetry preprocess \
   replay.acreplay \
+  --track /path/to/assettocorsa/content/tracks/spa \
   --setup gear+aero.ini \
   --setup-sp gear+aero.sp \
   --segments examples/spa_segments.json \
@@ -73,6 +74,11 @@ output/
 ├── sessions.*
 ├── laps.*
 ├── samples.*
+├── track/
+│   ├── reference.*
+│   ├── pit_reference.*
+│   ├── sections.*
+│   └── drs_zones.*
 ├── events/
 │   ├── index.*
 │   ├── braking.*
@@ -96,19 +102,17 @@ output/
     └── validation.json
 ```
 
-## Important limitations
+## Coordinate model and limitations
 
-- The parsed replay data does not contain AC's native normalized spline position. `progress` is therefore normalized cumulative horizontal path distance per lap and is marked `cumulative_distance_proxy`.
-- Pit-lane, track-valid, tyre-temperature, direct TC torque-cut, aero-load, and differential-lock channels are not present in the parsed replay data.
-- `events/abs_activity` contains per-wheel spectral ABS intervention candidates, not a native AC ABS-pressure or valve-state channel. Observed frequencies may be aliased by the replay sample rate.
-- `events/tc_activity` contains per-driven-wheel spectral TC intervention candidates. It requires high-frequency slip-ratio activity that is absent from the throttle input and exceeds the session's non-throttle noise floor; it does not use a wheel-slip trigger threshold. Known `driven_wheels` restrict analysis to those wheels. Unknown layouts retain four-wheel candidates with `driven_status=unknown`; observed frequencies may be aliased, and AC replay data does not expose direct torque cut.
-- `events/index` is the canonical interval index. Event spans use half-open sample ranges and expose both `span_duration_s` (including closed short gaps) and `active_duration_s` (samples that actually met the detector predicate).
-- `events/wheel_slip` contains one row per wheel and slip episode. Lockup and wheelspin are detected from longitudinal slip independently of pedal input; `events/relations` records overlap with braking, throttle, and shift events. Unknown driven-wheel metadata remains `unknown` rather than assuming rear-wheel drive.
-- Lap fields `lockup_wheel_time_s` and `wheelspin_wheel_time_s` are wheel-seconds: simultaneous episodes on two wheels count twice.
-- `events/shifts` spans the observable transition from leaving the old stable gear through the first sample of the confirmed new gear, including any neutral interval.
-- Schema version 4 replaces the axle-compressed lockup/wheelspin tables with `events/index`, `events/wheel_slip`, and `events/relations`. Version 3 datasets must be regenerated before merging.
-- `rear_tire_stress_proxy` is explicitly a proxy, not a hidden AC channel.
-- The example Spa distance boundaries are calibrated to the supplied F2004 data and should not be treated as universal track coordinates.
+- `track_s_m` is canonical geometric arc length on AC's `ai/fast_lane.ai` (falling back to `data/ideal_line.ai`). It is independent of how far the car actually drove. `track_progress` is `track_s_m / reference_length`.
+- `path_distance_2d_m` and `path_distance_3d_m` are the car's actual travelled path. They are deliberately separate from track position.
+- Samples also contain `lateral_offset_m`, AI-line side widths/boundary distances when populated, track-relative velocity/acceleration, section annotations, DRS annotations, and pit-lane projection.
+- `fast_lane.ai` is an AI racing line, not a geometric centerline. A lateral offset of zero means "on the AC AI line".
+- Replay body `rotation.*` is preserved raw. The tool does not claim `rotation.y` is chassis yaw; heading and heading-rate channels derived from velocity are named accordingly.
+- Pit classification uses `pit_lane.ai` only where the car is clearly separated from the main reference; the converging pit-entry/exit spline is intentionally treated as ambiguous rather than forcing a label.
+- AI spline side widths are track-author data and can be imperfect on mods; `is_off_track_candidate` is therefore evidence, not an AC-native invalid-lap flag.
+- `events/abs_activity` and `events/tc_activity` remain spectral intervention candidates because replay data has no native valve state or direct TC torque-cut channel.
+- Event spans use half-open sample ranges and expose both `span_duration_s` and `active_duration_s`.
 
 ## Library usage
 
@@ -126,6 +130,7 @@ preprocess_dataset(
         }
     ],
     output_dir=Path("build/run"),
+    track_dir=Path("/path/to/assettocorsa/content/tracks/spa"),
     segment_path=Path("examples/spa_segments.json"),
     config=ProcessingConfig(),
 )

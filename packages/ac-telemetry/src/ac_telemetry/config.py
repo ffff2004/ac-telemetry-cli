@@ -58,6 +58,19 @@ class ProcessingConfig:
     tc_shift_exclusion_s: float = 0.50
     time_reset_tolerance_ms: float = 5.0
     duplicate_distance_tolerance_m: float = 1e-6
+    track_projection_search_window_points: int = 18
+    track_projection_global_fallback_error_m: float = 25.0
+    track_projection_global_fallback_interval_samples: int = 100
+    minimum_track_width_m: float = 2.0
+    track_boundary_margin_m: float = 0.5
+    track_projection_quality_threshold_m: float = 6.0
+    pit_lane_max_distance_m: float = 8.0
+    pit_lane_preference_margin_m: float = 1.0
+    pit_main_reference_min_distance_m: float = 10.0
+    drs_detection_window_m: float = 5.0
+    full_throttle_commit_min_s: float = 0.30
+    full_throttle_commit_gap_s: float = 0.06
+    steering_reversal_threshold: float = 0.02
 
     def to_dict(self) -> dict[str, float | int]:
         return asdict(self)

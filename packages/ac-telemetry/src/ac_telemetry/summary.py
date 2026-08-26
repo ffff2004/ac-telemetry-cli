@@ -60,8 +60,8 @@ def build_segment_statistics(
             ("entry_speed_kmh", "entry_speed_kmh"),
             ("minimum_speed_kmh", "minimum_speed_kmh"),
             ("exit_speed_kmh", "exit_speed_kmh"),
-            ("brake_start_position", "brake_start"),
-            ("full_throttle_position", "full_throttle"),
+            ("brake_onset_track_s_m", "brake_start_track_s_m"),
+            ("full_throttle_commit_track_s_m", "full_throttle_commit_track_s_m"),
             ("coasting_time_s", "coasting_time_s"),
         ]:
             row.update(_stats(target[column], prefix))
@@ -113,10 +113,10 @@ def build_ai_context(
         "best_laps": best_laps,
         "segment_statistics": segment_data,
         "known_limitations": [
-            "Replay CSV does not contain native normalized spline position",
-            "Progress uses normalized cumulative path distance unless another source is added",
-            "TC activity events are spectral candidates because torque cut is not recorded",
-            "Pit-lane and track-valid flags are unavailable in the parsed replay data",
+            "Track coordinates are projected onto AC fast_lane.ai, which is an AI racing line rather than a geometric track centerline",
+            "Replay body rotation fields are preserved raw; chassis yaw is not inferred until their semantics are independently validated",
+            "Off-track classification uses AI spline side widths when those fields are populated by the track author",
+            "TC activity events are spectral candidates because direct torque cut is not recorded",
         ],
         "data_quality": {
             "flag_count": int(len(quality_flags)),

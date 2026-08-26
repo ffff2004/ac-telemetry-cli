@@ -1,27 +1,27 @@
 {
   "track": "spa",
-  "coordinate": "actual_distance_m",
-  "description": "Example boundaries calibrated to the supplied F2004 replay data. Recalibrate for other cars or progress sources.",
+  "coordinate": "track_progress",
+  "description": "Example Spa analysis boundaries expressed on the fixed AC fast_lane.ai reference. They no longer depend on vehicle path length or setup.",
   "segments": [
-    {"id": "la_source", "name": "La Source + exit", "start": 0, "end": 700},
-    {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 700, "end": 2250},
-    {"id": "les_combes", "name": "Les Combes / Malmedy", "start": 2250, "end": 2800},
-    {"id": "bruxelles", "name": "Bruxelles / No Name", "start": 2800, "end": 3500},
-    {"id": "pouhon", "name": "Pouhon", "start": 3500, "end": 4300},
+    {"id": "la_source", "name": "La Source + exit", "start": 0.0, "end": 0.1},
+    {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 0.1, "end": 0.3214286},
+    {"id": "les_combes", "name": "Les Combes / Malmedy", "start": 0.3214286, "end": 0.4},
+    {"id": "bruxelles", "name": "Bruxelles / No Name", "start": 0.4, "end": 0.5},
+    {"id": "pouhon", "name": "Pouhon", "start": 0.5, "end": 0.6142857},
     {
       "id": "fagnes",
       "name": "Fagnes",
-      "start": 4300,
-      "end": 4750,
+      "start": 0.6142857,
+      "end": 0.6785714,
       "subsegments": [
-        {"id": "fagnes_approach", "name": "Fagnes approach and braking", "start": 4300, "end": 4450},
-        {"id": "fagnes_right", "name": "Fagnes first right", "start": 4450, "end": 4560},
-        {"id": "fagnes_transition", "name": "Fagnes transition", "start": 4560, "end": 4630},
-        {"id": "fagnes_left_exit", "name": "Fagnes left and exit", "start": 4630, "end": 4750}
+        {"id": "fagnes_approach", "name": "Fagnes approach and braking", "start": 0.6142857, "end": 0.6357143},
+        {"id": "fagnes_right", "name": "Fagnes first right", "start": 0.6357143, "end": 0.6514286},
+        {"id": "fagnes_transition", "name": "Fagnes transition", "start": 0.6514286, "end": 0.6614286},
+        {"id": "fagnes_left_exit", "name": "Fagnes left and exit", "start": 0.6614286, "end": 0.6785714}
       ]
     },
-    {"id": "campus_stavelot", "name": "Campus / Stavelot", "start": 4750, "end": 5400},
-    {"id": "blanchimont", "name": "Blanchimont run", "start": 5400, "end": 6500},
-    {"id": "bus_stop", "name": "Bus Stop", "start": 6500, "end": 6940}
+    {"id": "campus_stavelot", "name": "Campus / Stavelot", "start": 0.6785714, "end": 0.7714286},
+    {"id": "blanchimont", "name": "Blanchimont run", "start": 0.7714286, "end": 0.9285714},
+    {"id": "bus_stop", "name": "Bus Stop", "start": 0.9285714, "end": 1.0}
   ]
 }
