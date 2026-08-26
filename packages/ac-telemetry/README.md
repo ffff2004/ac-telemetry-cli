@@ -98,6 +98,7 @@ output/
 ## Coordinate model and limitations
 
 - `track_s_m` is canonical geometric arc length on AC's `ai/fast_lane.ai` (falling back to `data/ideal_line.ai`). It is independent of how far the car actually drove. `track_progress` is `track_s_m / reference_length`.
+- Segment definitions are per-lap intervals and must not cross the lap boundary (`start > end`). Split such a range at `1.0`/`0.0`; `end=1.0` is the finish-line endpoint.
 - `path_distance_2d_m` and `path_distance_3d_m` are the car's actual travelled path. They are deliberately separate from track position.
 - Samples also contain `lateral_offset_m`, AI-line side widths/boundary distances when populated, track-relative velocity/acceleration, section annotations, DRS annotations, and pit-lane projection.
 - `fast_lane.ai` is an AI racing line, not a geometric centerline. A lateral offset of zero means "on the AC AI line".

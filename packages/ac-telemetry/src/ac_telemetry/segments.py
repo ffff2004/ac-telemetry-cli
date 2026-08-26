@@ -8,6 +8,7 @@ from .config import ProcessingConfig
 from .util import contiguous_true_runs, json_load
 
 SUPPORTED_COORDINATES = {"track_s_m", "track_progress"}
+_LAP_START_SAMPLE_TOLERANCE_M = 50.0
 
 
 def load_segment_definitions(path: Path | None) -> dict[str, Any] | None:
@@ -21,7 +22,22 @@ def load_segment_definitions(path: Path | None) -> dict[str, Any] | None:
         )
     if not isinstance(data.get("segments"), list):
         raise ValueError("Segment definition must contain a segments list")
+    _validate_segment_definitions(data)
     return data
+
+
+def _validate_segment_definitions(definitions: dict[str, Any]) -> None:
+    for parent in definitions["segments"]:
+        candidates = [parent, *parent.get("subsegments", [])]
+        for definition in candidates:
+            start = float(definition["start"])
+            end = float(definition["end"])
+            if end < start:
+                identifier = definition.get("id", "<unnamed>")
+                raise ValueError(
+                    f"Segment {identifier!r} crosses the lap boundary "
+                    f"(start={start:g}, end={end:g}); split it at 1.0/0.0"
+                )
 
 
 def _to_m(value: float, coordinate: str, track_length_m: float) -> float:
@@ -32,11 +48,25 @@ def _crossing(
     lap: pd.DataFrame,
     target_wrapped_m: float,
     track_length_m: float,
+    minimum_unwrapped_m: float | None = None,
 ) -> tuple[int, int, float] | None:
     s = lap["track_s_unwrapped_m"].to_numpy(float)
     if len(s) < 2 or not np.isfinite(s).any():
         return None
-    lo = int(np.floor((np.nanmin(s) - target_wrapped_m) / track_length_m)) - 1
+    if (
+        minimum_unwrapped_m is None
+        and abs(target_wrapped_m) <= 1e-9
+        and 0.0 < s[0] <= _LAP_START_SAMPLE_TOLERANCE_M
+    ):
+        # Replay samples usually begin a few metres after the exact start/finish
+        # coordinate. Treat the first sample as the lap-start state instead of
+        # incorrectly selecting the finish-line crossing at the end of the lap.
+        return 0, 1, 0.0
+    lo = (
+        int(np.ceil((minimum_unwrapped_m - target_wrapped_m) / track_length_m))
+        if minimum_unwrapped_m is not None
+        else int(np.floor((np.nanmin(s) - target_wrapped_m) / track_length_m)) - 1
+    )
     hi = int(np.ceil((np.nanmax(s) - target_wrapped_m) / track_length_m)) + 1
     for cycle in range(lo, hi + 1):
         target = target_wrapped_m + cycle * track_length_m
@@ -63,8 +93,14 @@ def _state_at(
     lap: pd.DataFrame,
     target_wrapped_m: float,
     track_length_m: float,
+    minimum_unwrapped_m: float | None = None,
 ) -> dict[str, Any] | None:
-    crossing = _crossing(lap, target_wrapped_m, track_length_m)
+    crossing = _crossing(
+        lap,
+        target_wrapped_m,
+        track_length_m,
+        minimum_unwrapped_m=minimum_unwrapped_m,
+    )
     if crossing is None:
         return None
     i, j, alpha = crossing
@@ -93,6 +129,10 @@ def _state_at(
     )
     state["sample_before"] = int(first["sample_index"])
     state["sample_after"] = int(second["sample_index"])
+    state["track_s_unwrapped_m"] = float(
+        first["track_s_unwrapped_m"]
+        + alpha * (second["track_s_unwrapped_m"] - first["track_s_unwrapped_m"])
+    )
     return state
 
 
@@ -155,6 +195,7 @@ def segment_passes(
 ) -> pd.DataFrame:
     if definitions is None:
         return pd.DataFrame()
+    _validate_segment_definitions(definitions)
     coordinate = definitions.get("coordinate", "track_s_m")
     rows: list[dict[str, Any]] = []
     lap_lookup = laps.set_index("lap_id", drop=False)
@@ -182,8 +223,15 @@ def segment_passes(
                 % track_length_m
             )
             entry = _state_at(lap, start_m, track_length_m)
-            exit_state = _state_at(lap, end_m, track_length_m)
-            if entry is None or exit_state is None:
+            if entry is None:
+                continue
+            exit_state = _state_at(
+                lap,
+                end_m,
+                track_length_m,
+                minimum_unwrapped_m=entry["track_s_unwrapped_m"],
+            )
+            if exit_state is None:
                 continue
             start_time = float(entry["lap_time_s"])
             end_time = float(exit_state["lap_time_s"])

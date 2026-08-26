@@ -1,8 +1,9 @@
 {
   "track": "spa",
   "coordinate": "track_progress",
-  "description": "Example Spa analysis boundaries anchored to AC data/sections.ini IN progress. Each top-level segment covers its corner group and the exit until the next corner group; boundaries are contiguous around the lap.",
+  "description": "Example Spa analysis boundaries anchored to AC data/sections.ini IN progress. Each corner segment covers its corner group and the exit until the next corner group; the start/finish approach to La Source is separate, and boundaries are contiguous around the lap.",
   "segments": [
+    {"id": "start_finish_to_la_source", "name": "Start/finish to La Source", "start": 0.0, "end": 0.038},
     {"id": "la_source", "name": "La Source + exit", "start": 0.038, "end": 0.137},
     {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 0.137, "end": 0.325},
     {"id": "les_combes", "name": "Les Combes / Malmedy", "start": 0.325, "end": 0.411},
@@ -16,6 +17,6 @@
     },
     {"id": "campus_stavelot", "name": "Campus / Stavelot", "start": 0.693, "end": 0.824},
     {"id": "blanchimont", "name": "Blanchimont run", "start": 0.824, "end": 0.947},
-    {"id": "bus_stop", "name": "Bus Stop", "start": 0.947, "end": 0.038}
+    {"id": "bus_stop", "name": "Bus Stop + exit to finish", "start": 0.947, "end": 1.0}
   ]
 }
