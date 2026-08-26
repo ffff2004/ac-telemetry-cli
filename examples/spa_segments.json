@@ -1,27 +1,21 @@
 {
   "track": "spa",
   "coordinate": "track_progress",
-  "description": "Example Spa analysis boundaries expressed on the fixed AC fast_lane.ai reference. They no longer depend on vehicle path length or setup.",
+  "description": "Example Spa analysis boundaries anchored to AC data/sections.ini IN progress. Each top-level segment covers its corner group and the exit until the next corner group; boundaries are contiguous around the lap.",
   "segments": [
-    {"id": "la_source", "name": "La Source + exit", "start": 0.0, "end": 0.1},
-    {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 0.1, "end": 0.3214286},
-    {"id": "les_combes", "name": "Les Combes / Malmedy", "start": 0.3214286, "end": 0.4},
-    {"id": "bruxelles", "name": "Bruxelles / No Name", "start": 0.4, "end": 0.5},
-    {"id": "pouhon", "name": "Pouhon", "start": 0.5, "end": 0.6142857},
+    {"id": "la_source", "name": "La Source + exit", "start": 0.038, "end": 0.137},
+    {"id": "eau_rouge_kemmel", "name": "Eau Rouge / Kemmel", "start": 0.137, "end": 0.325},
+    {"id": "les_combes", "name": "Les Combes / Malmedy", "start": 0.325, "end": 0.411},
+    {"id": "bruxelles", "name": "Bruxelles / No Name", "start": 0.411, "end": 0.529},
+    {"id": "pouhon", "name": "Pouhon", "start": 0.529, "end": 0.615},
     {
       "id": "fagnes",
       "name": "Fagnes",
-      "start": 0.6142857,
-      "end": 0.6785714,
-      "subsegments": [
-        {"id": "fagnes_approach", "name": "Fagnes approach and braking", "start": 0.6142857, "end": 0.6357143},
-        {"id": "fagnes_right", "name": "Fagnes first right", "start": 0.6357143, "end": 0.6514286},
-        {"id": "fagnes_transition", "name": "Fagnes transition", "start": 0.6514286, "end": 0.6614286},
-        {"id": "fagnes_left_exit", "name": "Fagnes left and exit", "start": 0.6614286, "end": 0.6785714}
-      ]
+      "start": 0.615,
+      "end": 0.693
     },
-    {"id": "campus_stavelot", "name": "Campus / Stavelot", "start": 0.6785714, "end": 0.7714286},
-    {"id": "blanchimont", "name": "Blanchimont run", "start": 0.7714286, "end": 0.9285714},
-    {"id": "bus_stop", "name": "Bus Stop", "start": 0.9285714, "end": 1.0}
+    {"id": "campus_stavelot", "name": "Campus / Stavelot", "start": 0.693, "end": 0.824},
+    {"id": "blanchimont", "name": "Blanchimont run", "start": 0.824, "end": 0.947},
+    {"id": "bus_stop", "name": "Bus Stop", "start": 0.947, "end": 0.038}
   ]
 }
