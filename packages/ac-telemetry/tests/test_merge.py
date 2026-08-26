@@ -8,6 +8,7 @@ from ac_telemetry.manifest import DATASET_SCHEMA_VERSION, table_manifest
 from ac_telemetry.merge import merge_datasets
 from ac_telemetry.storage import DatasetStorage, TableRef
 from ac_telemetry.util import json_dump, json_load
+from ac_telemetry.validation import ValidationCode, validate_dataset
 
 
 def _passes(session_id: str, lap_id: str) -> pd.DataFrame:
@@ -43,12 +44,16 @@ def _write_dataset(
     track_value: int = 1,
     setup_id: str = "setup-a",
     setup_hash: str = "setup-content",
-    setup_value: float = 3.0,
+    setup_value: object = 3.0,
+    normalized_setup_value: object | None = None,
     source_hash: str | None = None,
     source_path: str | None = None,
     source_name: str | None = None,
 ) -> None:
     lap_id = f"{session_id}-lap"
+    normalized_value = (
+        setup_value if normalized_setup_value is None else normalized_setup_value
+    )
     storage = DatasetStorage(root)
     frames = {
         "sessions": pd.DataFrame(
@@ -98,9 +103,9 @@ def _write_dataset(
                     "source_hash": setup_hash,
                     "section": "GEARS",
                     "parameter": "FINAL",
-                    "raw_value": str(setup_value),
-                    "value_numeric": setup_value,
-                    "value_text": str(setup_value),
+                    "raw_value": str(normalized_value),
+                    "value_numeric": normalized_value,
+                    "value_text": str(normalized_value),
                     "category": "gearing",
                 }
             ]
@@ -160,6 +165,44 @@ def _write_dataset(
             "tables": table_manifest(refs),
         },
     )
+
+
+def _append_setup(
+    root: Path,
+    *,
+    setup_id: str,
+    raw_value: object,
+    normalized_value: object,
+) -> None:
+    storage = DatasetStorage(root)
+    normalized = storage.read("setup/normalized.parquet")
+    row = normalized.iloc[0].to_dict()
+    row.update(
+        {
+            "setup_id": setup_id,
+            "source_hash": f"{setup_id}-content",
+            "raw_value": str(normalized_value),
+            "value_numeric": normalized_value,
+            "value_text": str(normalized_value),
+        }
+    )
+    normalized = pd.concat([normalized, pd.DataFrame([row])], ignore_index=True)
+    reference = storage.write("setup/normalized", normalized)
+    manifest = json_load(root / "manifest.json")
+    manifest["tables"]["setup/normalized"] = table_manifest([reference])[
+        "setup/normalized"
+    ]
+    json_dump(root / "manifest.json", manifest)
+
+    raw = json_load(root / "setup" / "raw.json")
+    raw[setup_id] = {
+        "setup_id": setup_id,
+        "setup_label": row["setup_label"],
+        "source_file": row["source_file"],
+        "source_hash": f"{setup_id}-content",
+        "raw": {"GEARS": {"FINAL": raw_value}},
+    }
+    json_dump(root / "setup" / "raw.json", raw)
 
 
 def test_merge_public_interface_is_deterministic_and_preserves_sidecars(
@@ -287,6 +330,99 @@ def test_merge_rejects_raw_and_normalized_setup_contradictions(tmp_path: Path) -
     )
     with pytest.raises(ValueError, match="Conflicting setup raw metadata"):
         merge_datasets([left, right], tmp_path / "raw-conflict")
+
+
+def test_validate_command_reports_shared_setup_integrity_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    raw = json_load(source / "setup" / "raw.json")
+    raw["setup-a"]["raw"] = {"": {"FINAL": 3.0}}
+    json_dump(source / "setup" / "raw.json", raw)
+
+    assert main(["validate", str(source)]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["checks"]["setup_registry"] == "fail"
+    assert any(issue["code"] == "INVALID_SETUP_SECTION" for issue in report["warnings"])
+
+    with pytest.raises(ValueError, match="empty raw section"):
+        merge_datasets([source], tmp_path / "output")
+
+
+def test_merge_accepts_equivalent_integer_and_float_setup_values(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source,
+        session_id="one",
+        setup_label="baseline",
+        setup_source="/a.ini",
+        setup_value=3,
+        normalized_setup_value=3.0,
+    )
+
+    manifest = merge_datasets([source], tmp_path / "output")
+
+    assert manifest["dataset_id"]
+
+
+def test_merge_rejects_unreferenced_conflicting_normalized_setup(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    _append_setup(source, setup_id="unreferenced", raw_value=3, normalized_value=3.5)
+
+    with pytest.raises(ValueError, match="normalized parameters disagree"):
+        merge_datasets([source], tmp_path / "output")
+
+
+def test_merge_surfaces_first_integrity_issue_without_reclassifying_it(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    storage = DatasetStorage(source)
+
+    sessions = storage.read("sessions.parquet")
+    sessions.loc[0, "session_id"] = None
+    sessions_ref = storage.write("sessions", sessions)
+
+    laps = storage.read("laps.parquet").drop(columns=["lap_id"])
+    laps_ref = storage.write("laps", laps)
+
+    manifest = json_load(source / "manifest.json")
+    manifest["tables"].update(
+        {
+            **table_manifest([sessions_ref]),
+            **table_manifest([laps_ref]),
+        }
+    )
+    json_dump(source / "manifest.json", manifest)
+
+    report = validate_dataset(source)
+    first_issue = report["warnings"][0]
+    assert first_issue["code"] == ValidationCode.NULL_IDENTITY_VALUES.value
+
+    with pytest.raises(ValueError) as error:
+        merge_datasets([source], tmp_path / "output")
+
+    message = str(error.value)
+    assert (
+        ValidationCode.NULL_IDENTITY_VALUES.value.lower().replace("_", " ") in message
+    )
+    assert first_issue["message"] in message
+    assert "missing required tables" not in message
+    assert "incompatible schema version" not in message
+    assert not (tmp_path / "output").exists()
 
 
 def test_merge_rejects_missing_core_tables_and_orphan_relations(tmp_path: Path) -> None:

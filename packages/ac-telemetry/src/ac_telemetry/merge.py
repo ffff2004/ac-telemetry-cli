@@ -28,7 +28,12 @@ from .setup_parser import build_setup_diffs
 from .storage import DatasetStorage, TableRef
 from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, json_load, stable_id
-from .validation import validate_dataset
+from .validation import (
+    STABLE_KEY_COLUMNS,
+    ValidationCode,
+    dataset_integrity_issues,
+    validate_dataset,
+)
 
 _GENERATED_TABLES = {
     "setup/diffs",
@@ -57,15 +62,19 @@ _OPTIONAL_TABLES = {
 _DISPLAY_COLUMNS = {"source_file", "source_name", "setup_label"}
 _TRACK_DISPLAY_FIELDS = {"track_dir", "reference_source", "pit_reference_source"}
 
-_KEY_COLUMNS: dict[str, tuple[str, ...]] = {
-    "sessions": ("session_id",),
-    "laps": ("lap_id",),
-    "samples": ("session_id", "lap_id", "sample_index"),
-    "quality/flags": ("session_id", "lap_id", "code", "sample_start", "sample_end"),
-    "setup/normalized": ("setup_id", "section", "parameter"),
-    "segments/passes": ("session_id", "lap_id", "segment_id"),
-    "events/relations": ("relation_id",),
-}
+_KEY_COLUMNS = STABLE_KEY_COLUMNS
+_MISSING_TABLE_CODES = frozenset(
+    {ValidationCode.MISSING_TABLES, ValidationCode.UNAVAILABLE_CORE_TABLES}
+)
+
+
+def _validation_code(value: Any) -> ValidationCode | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return ValidationCode(value)
+    except ValueError:
+        return None
 
 
 def _canonical(value: Any) -> Any:
@@ -247,9 +256,6 @@ def _ordered_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _validate_table_names(manifest: Mapping[str, Any], root: Path) -> None:
     names = set(manifest["tables"])
-    missing = sorted(_REQUIRED_TABLES - names)
-    if missing:
-        raise ValueError(f"Dataset {root} is missing required tables: {missing}")
     unknown = sorted(names - _REQUIRED_TABLES - _OPTIONAL_TABLES)
     if unknown:
         raise ValueError(f"Dataset {root} contains unsupported merge tables: {unknown}")
@@ -271,12 +277,42 @@ def _load_inputs(
             manifest.get("tables"), dict
         ):
             raise ValueError(f"Invalid dataset manifest: {manifest_path}")
+        report = validate_dataset(root)
+        if report["status"] == "error":
+            warnings = report.get("warnings")
+            warning = warnings[0] if isinstance(warnings, list) and warnings else {}
+            if not isinstance(warning, Mapping):
+                warning = {}
+            code = _validation_code(warning.get("code"))
+            message = str(warning.get("message", "Validation failed"))
+            if code in _MISSING_TABLE_CODES:
+                raise ValueError(
+                    f"Dataset {root} is missing required tables: {message}"
+                )
+            if code is ValidationCode.MISSING_REQUIRED_COLUMNS:
+                raise ValueError(
+                    f"Dataset {root} is missing required columns: {message}"
+                )
+            code_label = (
+                code.value.replace("_", " ").lower()
+                if code is not None
+                else "validation"
+            )
+            raise ValueError(
+                f"Dataset {root} failed validation ({code_label}): {message}"
+            )
         _validate_table_names(manifest, root)
         input_tables = {
             logical_name: load_dataset_table(root, logical_name)
             for logical_name in manifest["tables"]
         }
-        _validate_references(input_tables, _raw_registry([root]), context=str(root))
+        raw_path = root / "setup" / "raw.json"
+        raw = json_load(raw_path) if raw_path.exists() else None
+        definitions_path = root / "segments" / "definitions.json"
+        definitions = json_load(definitions_path) if definitions_path.exists() else None
+        issues = dataset_integrity_issues(manifest, input_tables, raw, definitions)
+        if issues:
+            raise ValueError(f"Dataset {root} failed validation: {issues[0].message}")
         manifests.append(manifest)
         for logical_name, frame in input_tables.items():
             tables.setdefault(logical_name, []).append(frame)
@@ -342,27 +378,13 @@ def _raw_registry(roots: list[Path]) -> dict[str, dict[str, Any]]:
         if not path.exists():
             continue
         raw = json_load(path)
-        if not isinstance(raw, dict):
-            raise ValueError(f"Invalid setup raw registry: {path}")
         for setup_id, metadata in raw.items():
-            if not isinstance(metadata, dict):
-                raise ValueError(f"Invalid setup metadata for {setup_id!r}")
-            if metadata.get("setup_id") != str(setup_id):
-                raise ValueError(
-                    f"Setup registry key and setup_id disagree for {setup_id!r}"
-                )
             semantic = {
                 "source_hash": metadata.get("source_hash"),
                 "raw": metadata.get("raw"),
             }
-            if semantic["source_hash"] is None or semantic["raw"] is None:
-                raise ValueError(
-                    f"Setup {setup_id!r} lacks source_hash or raw metadata"
-                )
             paths = metadata.get("source_files", [metadata.get("source_file")])
             labels = metadata.get("setup_labels", [metadata.get("setup_label")])
-            if not isinstance(paths, list) or not isinstance(labels, list):
-                raise ValueError(f"Invalid setup provenance for {setup_id!r}")
             previous = registry.get(str(setup_id))
             if previous is not None and _token(previous["semantic"]) != _token(
                 semantic
@@ -391,228 +413,6 @@ def _raw_registry(roots: list[Path]) -> dict[str, dict[str, Any]]:
             "setup_labels": labels,
         }
     return result
-
-
-def _required_columns(
-    logical_name: str, frame: pd.DataFrame, columns: set[str]
-) -> None:
-    missing = sorted(columns - set(frame.columns))
-    if missing:
-        raise ValueError(
-            f"Table {logical_name!r} is missing required columns {missing}"
-        )
-
-
-def _require_non_null(
-    logical_name: str, frame: pd.DataFrame, columns: set[str]
-) -> None:
-    missing_values = sorted(
-        column for column in columns if bool(frame[column].isna().any())
-    )
-    if missing_values:
-        raise ValueError(
-            f"Table {logical_name!r} has missing values in relational columns {missing_values}"
-        )
-
-
-def _normalized_setup_values(
-    frame: pd.DataFrame, setup_id: str
-) -> dict[tuple[str, str], Any]:
-    _required_columns(
-        "setup/normalized",
-        frame,
-        {
-            "setup_id",
-            "source_hash",
-            "section",
-            "parameter",
-            "value_numeric",
-            "value_text",
-        },
-    )
-    values: dict[tuple[str, str], Any] = {}
-    rows = frame[frame["setup_id"].astype(str) == setup_id]
-    for record in _records(rows):
-        key = (str(record["section"]), str(record["parameter"]))
-        if key in values:
-            raise ValueError(
-                f"Duplicate normalized setup parameter for {setup_id!r}: {key!r}"
-            )
-        numeric = record["value_numeric"]
-        values[key] = numeric if numeric is not None else record["value_text"]
-    return values
-
-
-def _raw_setup_values(
-    raw: Mapping[str, Any], setup_id: str
-) -> dict[tuple[str, str], Any]:
-    contents = raw.get(setup_id, {}).get("raw")
-    if not isinstance(contents, Mapping):
-        raise ValueError(f"Setup {setup_id!r} has invalid raw setup contents")
-    values: dict[tuple[str, str], Any] = {}
-    for section, parameters in contents.items():
-        if not isinstance(parameters, Mapping):
-            raise ValueError(f"Setup {setup_id!r} section {section!r} is not an object")
-        for parameter, value in parameters.items():
-            key = (str(section), str(parameter))
-            if key in values:
-                raise ValueError(f"Setup {setup_id!r} duplicates raw parameter {key!r}")
-            values[key] = _canonical(value)
-    return values
-
-
-def _validate_setup_contents(
-    normalized: pd.DataFrame, raw: Mapping[str, Any], setup_id: str
-) -> None:
-    _required_columns(
-        "setup/normalized",
-        normalized,
-        {
-            "setup_id",
-            "source_hash",
-            "section",
-            "parameter",
-            "value_numeric",
-            "value_text",
-        },
-    )
-    source_hashes = {
-        _token(value)
-        for value in normalized.loc[
-            normalized["setup_id"].astype(str) == setup_id, "source_hash"
-        ]
-    }
-    if source_hashes != {_token(raw[setup_id]["source_hash"])}:
-        raise ValueError(
-            f"Setup {setup_id!r} source_hash disagrees between raw registry and normalized table"
-        )
-    normalized_values = _normalized_setup_values(normalized, setup_id)
-    raw_values = _raw_setup_values(raw, setup_id)
-    if _token(normalized_values) != _token(raw_values):
-        raise ValueError(
-            f"Setup {setup_id!r} raw registry and normalized parameters disagree"
-        )
-
-
-def _validate_references(
-    tables: Mapping[str, pd.DataFrame],
-    raw: Mapping[str, Any],
-    *,
-    context: str = "merged datasets",
-) -> None:
-    sessions = tables.get("sessions")
-    laps = tables.get("laps")
-    samples = tables.get("samples")
-    reference = tables.get("track/reference")
-    if sessions is None or laps is None or samples is None or reference is None:
-        raise ValueError(
-            f"{context} must contain sessions, laps, samples, and track/reference"
-        )
-    _required_columns("sessions", sessions, {"session_id"})
-    _required_columns("laps", laps, {"session_id", "lap_id"})
-    _required_columns("samples", samples, {"session_id", "lap_id", "sample_index"})
-    _require_non_null("sessions", sessions, {"session_id"})
-    _require_non_null("laps", laps, {"session_id", "lap_id"})
-    _require_non_null("samples", samples, {"session_id", "lap_id", "sample_index"})
-    session_ids = set(sessions["session_id"].dropna().astype(str))
-    lap_ids = set(laps["lap_id"].dropna().astype(str))
-    lap_pairs = set(
-        zip(
-            laps["session_id"].dropna().astype(str),
-            laps["lap_id"].dropna().astype(str),
-            strict=True,
-        )
-    )
-    normalized = tables.get("setup/normalized")
-    normalized_ids = (
-        set(normalized["setup_id"].dropna().astype(str))
-        if normalized is not None
-        else set()
-    )
-    session_setups = (
-        sessions["setup_id"] if "setup_id" in sessions else pd.Series(dtype=object)
-    )
-    for setup_id in session_setups.dropna().astype(str):
-        if setup_id not in normalized_ids or setup_id not in raw:
-            raise ValueError(
-                f"Session setup_id {setup_id!r} is not linked to normalized and raw setup data"
-            )
-        if normalized is None:
-            raise ValueError(
-                f"Session setup_id {setup_id!r} has no normalized setup data"
-            )
-        _validate_setup_contents(normalized, raw, setup_id)
-    if normalized is not None:
-        missing_raw = normalized_ids - set(raw)
-        if missing_raw:
-            raise ValueError(
-                f"Normalized setups missing raw metadata: {sorted(missing_raw)}"
-            )
-
-    for logical_name, frame in tables.items():
-        if (
-            "session_id" in frame
-            and not set(frame["session_id"].dropna().astype(str)) <= session_ids
-        ):
-            raise ValueError(f"Table {logical_name!r} references an unknown session_id")
-        if (
-            "lap_id" in frame
-            and not set(frame["lap_id"].dropna().astype(str)) <= lap_ids
-        ):
-            raise ValueError(f"Table {logical_name!r} references an unknown lap_id")
-        if {"session_id", "lap_id"} <= set(frame.columns):
-            pairs = set(
-                zip(
-                    frame["session_id"].dropna().astype(str),
-                    frame["lap_id"].dropna().astype(str),
-                    strict=True,
-                )
-            )
-            if not pairs <= lap_pairs:
-                raise ValueError(
-                    f"Table {logical_name!r} references an unknown session/lap pair"
-                )
-    sessions_with_laps = set(laps["session_id"].dropna().astype(str))
-    if not session_ids <= sessions_with_laps:
-        raise ValueError("Sessions without laps are not valid merge inputs")
-    sample_pairs = set(
-        zip(
-            samples["session_id"].dropna().astype(str),
-            samples["lap_id"].dropna().astype(str),
-            strict=True,
-        )
-    )
-    if not lap_pairs <= sample_pairs:
-        raise ValueError("Laps without samples are not valid merge inputs")
-    event_index = tables.get("events/index")
-    event_tables = [name for name in tables if name.startswith("events/")]
-    if event_tables and event_index is None:
-        raise ValueError("Event fact tables require events/index")
-    if event_index is not None:
-        _required_columns("events/index", event_index, {"event_id"})
-        event_ids = set(event_index["event_id"].dropna().astype(str))
-        for logical_name, frame in tables.items():
-            if logical_name == "events/index":
-                continue
-            for column in (
-                "event_id",
-                "parent_braking_event_id",
-                "parent_throttle_event_id",
-            ):
-                if column in frame:
-                    values = set(frame[column].dropna().astype(str))
-                    if not values <= event_ids:
-                        raise ValueError(
-                            f"Table {logical_name!r} references an unknown event_id"
-                        )
-        relations = tables.get("events/relations")
-        if relations is not None:
-            _required_columns(
-                "events/relations", relations, {"event_id_a", "event_id_b"}
-            )
-            for column in ("event_id_a", "event_id_b"):
-                if not set(relations[column].dropna().astype(str)) <= event_ids:
-                    raise ValueError("Event relations reference an unknown event_id")
 
 
 def _flatten_source_files(manifests: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -730,7 +530,6 @@ def merge_datasets(
         else:
             merged_tables[logical_name] = _merge_keyed(logical_name, frames)
 
-    _validate_references(merged_tables, raw)
     setups = merged_tables.get("setup/normalized", pd.DataFrame())
     if not setups.empty:
         setup_diffs = build_setup_diffs(setups)
