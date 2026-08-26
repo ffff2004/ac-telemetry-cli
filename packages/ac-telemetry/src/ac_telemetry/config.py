@@ -58,9 +58,6 @@ class ProcessingConfig:
     tc_shift_exclusion_s: float = 0.50
     time_reset_tolerance_ms: float = 5.0
     duplicate_distance_tolerance_m: float = 1e-6
-    track_projection_search_window_points: int = 18
-    track_projection_global_fallback_error_m: float = 25.0
-    track_projection_global_fallback_interval_samples: int = 100
     minimum_track_width_m: float = 2.0
     track_boundary_margin_m: float = 0.5
     track_projection_quality_threshold_m: float = 6.0
