@@ -28,7 +28,6 @@ class ColumnSpec:
     availability: ColumnAvailability
     nullable: bool
     description: str
-    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
