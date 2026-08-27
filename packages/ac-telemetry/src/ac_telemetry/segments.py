@@ -5,91 +5,311 @@ import numpy as np
 import pandas as pd
 
 from .config import ProcessingConfig
-from .contract_types import ForeignKey, MergeMode, TableSpec, column_specs
+from .contract_types import (
+    ColumnAvailability,
+    ColumnSpec,
+    ForeignKey,
+    MergeMode,
+    TableSpec,
+)
 from .sections import parse_sections_ini
 from .util import contiguous_true_runs, json_load
 
 SUPPORTED_COORDINATES = {"track_s_m", "track_progress"}
 _LAP_START_SAMPLE_TOLERANCE_M = 50.0
 
-_PASS_COLUMNS = (
-    "session_id",
-    "lap_id",
-    "source_lap_number",
-    "segment_id",
-    "segment_name",
-    "parent_segment_id",
-    "coordinate",
-    "segment_start_track_s_m",
-    "segment_end_track_s_m",
-    "sample_count",
-    "segment_time_s",
-    "entry_speed_kmh",
-    "exit_speed_kmh",
-    "minimum_speed_kmh",
-    "minimum_speed_track_s_m",
-    "brake_onset_track_s_m",
-    "brake_release_track_s_m",
-    "brake_duration_s",
-    "peak_brake",
-    "brake_impulse_proxy_s",
-    "throttle_pickup_track_s_m",
-    "full_throttle_commit_track_s_m",
-    "coasting_time_s",
-    "partial_throttle_time_s",
-    "rear_slip_integral",
-    "max_abs_steer",
-    "steering_reversal_count",
-    "actual_path_length_m",
-    "reference_arc_length_m",
-    "path_excess_m",
-    "entry_lateral_offset_m",
-    "exit_lateral_offset_m",
-    "minimum_speed_lateral_offset_m",
-    "entry_velocity_cross_track_ms",
-    "exit_velocity_cross_track_ms",
-    "entry_heading_error_rad",
-    "exit_heading_error_rad",
-    "entry_gear",
-    "exit_gear",
-    "entry_rpm",
-    "exit_rpm",
-    "entry_throttle",
-    "exit_throttle",
-    "entry_brake",
-    "exit_brake",
-    "entry_steer",
-    "exit_steer",
-    "peak_abs_track_lat_g",
-    "minimum_track_long_g",
-    "is_complete_lap",
-    "is_valid_lap",
-    "valid_for_comparison",
+_REQUIRED = ColumnAvailability.REQUIRED
+_OPTIONAL = ColumnAvailability.OPTIONAL
+
+_PASS_COLUMN_SPECS = (
+    ColumnSpec(
+        "session_id",
+        _REQUIRED,
+        False,
+        "Identifier of the session containing this pass.",
+    ),
+    ColumnSpec(
+        "lap_id", _REQUIRED, False, "Identifier of the lap containing this pass."
+    ),
+    ColumnSpec(
+        "source_lap_number",
+        _OPTIONAL,
+        True,
+        "Replay-reported lap number for the containing lap.",
+    ),
+    ColumnSpec(
+        "segment_id",
+        _REQUIRED,
+        False,
+        "Identifier of the configured parent segment or subsegment.",
+    ),
+    ColumnSpec(
+        "segment_name", _REQUIRED, True, "Display name of the configured segment."
+    ),
+    ColumnSpec(
+        "parent_segment_id",
+        _OPTIONAL,
+        True,
+        "Identifier of the parent segment when this row represents a subsegment.",
+    ),
+    ColumnSpec(
+        "coordinate",
+        _OPTIONAL,
+        True,
+        "Coordinate system used by the source segment definitions.",
+    ),
+    ColumnSpec(
+        "segment_start_track_s_m",
+        _OPTIONAL,
+        True,
+        "Segment entry coordinate projected onto the track reference, in metres.",
+    ),
+    ColumnSpec(
+        "segment_end_track_s_m",
+        _OPTIONAL,
+        True,
+        "Segment exit coordinate projected onto the track reference, in metres.",
+    ),
+    ColumnSpec(
+        "sample_count",
+        _OPTIONAL,
+        True,
+        "Number of telemetry samples included in the pass.",
+    ),
+    ColumnSpec(
+        "segment_time_s",
+        _REQUIRED,
+        True,
+        "Elapsed time from the interpolated segment entry to exit, in seconds.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh",
+        _REQUIRED,
+        True,
+        "Interpolated vehicle speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh",
+        _REQUIRED,
+        True,
+        "Interpolated vehicle speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh",
+        _REQUIRED,
+        True,
+        "Lowest sampled speed within the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_track_s_m",
+        _OPTIONAL,
+        True,
+        "Track-reference coordinate of the minimum-speed sample, in metres.",
+    ),
+    ColumnSpec(
+        "brake_onset_track_s_m",
+        _REQUIRED,
+        True,
+        "Track-reference coordinate where the selected braking run starts, in metres.",
+    ),
+    ColumnSpec(
+        "brake_release_track_s_m",
+        _OPTIONAL,
+        True,
+        "Track-reference coordinate where the selected braking run ends, in metres.",
+    ),
+    ColumnSpec(
+        "brake_duration_s",
+        _OPTIONAL,
+        True,
+        "Duration of active braking in the selected braking run, in seconds.",
+    ),
+    ColumnSpec(
+        "peak_brake",
+        _OPTIONAL,
+        True,
+        "Maximum brake input in the selected braking run or pass.",
+    ),
+    ColumnSpec(
+        "brake_impulse_proxy_s",
+        _OPTIONAL,
+        True,
+        "Time integral of brake input over the selected braking run.",
+    ),
+    ColumnSpec(
+        "throttle_pickup_track_s_m",
+        _OPTIONAL,
+        True,
+        "First post-minimum-speed track coordinate meeting the throttle pickup threshold, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m",
+        _REQUIRED,
+        True,
+        "Track coordinate where sustained full-throttle commitment begins, in metres.",
+    ),
+    ColumnSpec(
+        "coasting_time_s",
+        _REQUIRED,
+        True,
+        "Time spent coasting within the segment, in seconds.",
+    ),
+    ColumnSpec(
+        "partial_throttle_time_s",
+        _OPTIONAL,
+        True,
+        "Time spent at partial throttle within the segment, in seconds.",
+    ),
+    ColumnSpec(
+        "rear_slip_integral",
+        _OPTIONAL,
+        True,
+        "Time integral of positive maximum rear-wheel slip ratio.",
+    ),
+    ColumnSpec(
+        "max_abs_steer",
+        _OPTIONAL,
+        True,
+        "Largest absolute steering angle within the segment.",
+    ),
+    ColumnSpec(
+        "steering_reversal_count",
+        _OPTIONAL,
+        True,
+        "Number of significant steering-direction reversals within the segment.",
+    ),
+    ColumnSpec(
+        "actual_path_length_m",
+        _OPTIONAL,
+        True,
+        "Driven three-dimensional path length through the segment, in metres.",
+    ),
+    ColumnSpec(
+        "reference_arc_length_m",
+        _OPTIONAL,
+        True,
+        "Track-reference arc length between segment boundaries, in metres.",
+    ),
+    ColumnSpec(
+        "path_excess_m",
+        _OPTIONAL,
+        True,
+        "Driven path length minus the reference arc length, in metres.",
+    ),
+    ColumnSpec(
+        "entry_lateral_offset_m",
+        _OPTIONAL,
+        True,
+        "Interpolated lateral offset from the track reference at entry, in metres.",
+    ),
+    ColumnSpec(
+        "exit_lateral_offset_m",
+        _OPTIONAL,
+        True,
+        "Interpolated lateral offset from the track reference at exit, in metres.",
+    ),
+    ColumnSpec(
+        "minimum_speed_lateral_offset_m",
+        _OPTIONAL,
+        True,
+        "Lateral offset at the segment minimum-speed sample, in metres.",
+    ),
+    ColumnSpec(
+        "entry_velocity_cross_track_ms",
+        _OPTIONAL,
+        True,
+        "Interpolated cross-track velocity at entry, in metres per second.",
+    ),
+    ColumnSpec(
+        "exit_velocity_cross_track_ms",
+        _OPTIONAL,
+        True,
+        "Interpolated cross-track velocity at exit, in metres per second.",
+    ),
+    ColumnSpec(
+        "entry_heading_error_rad",
+        _OPTIONAL,
+        True,
+        "Interpolated velocity-heading error at entry, in radians.",
+    ),
+    ColumnSpec(
+        "exit_heading_error_rad",
+        _OPTIONAL,
+        True,
+        "Interpolated velocity-heading error at exit, in radians.",
+    ),
+    ColumnSpec(
+        "entry_gear",
+        _OPTIONAL,
+        True,
+        "Discrete physical gear selected at segment entry.",
+    ),
+    ColumnSpec(
+        "exit_gear", _OPTIONAL, True, "Discrete physical gear selected at segment exit."
+    ),
+    ColumnSpec(
+        "entry_rpm", _OPTIONAL, True, "Interpolated engine speed at segment entry."
+    ),
+    ColumnSpec(
+        "exit_rpm", _OPTIONAL, True, "Interpolated engine speed at segment exit."
+    ),
+    ColumnSpec(
+        "entry_throttle",
+        _OPTIONAL,
+        True,
+        "Interpolated throttle input at segment entry.",
+    ),
+    ColumnSpec(
+        "exit_throttle", _OPTIONAL, True, "Interpolated throttle input at segment exit."
+    ),
+    ColumnSpec(
+        "entry_brake", _OPTIONAL, True, "Interpolated brake input at segment entry."
+    ),
+    ColumnSpec(
+        "exit_brake", _OPTIONAL, True, "Interpolated brake input at segment exit."
+    ),
+    ColumnSpec(
+        "entry_steer", _OPTIONAL, True, "Interpolated steering angle at segment entry."
+    ),
+    ColumnSpec(
+        "exit_steer", _OPTIONAL, True, "Interpolated steering angle at segment exit."
+    ),
+    ColumnSpec(
+        "peak_abs_track_lat_g",
+        _OPTIONAL,
+        True,
+        "Largest absolute track-relative lateral acceleration in g.",
+    ),
+    ColumnSpec(
+        "minimum_track_long_g",
+        _OPTIONAL,
+        True,
+        "Lowest track-relative longitudinal acceleration in g.",
+    ),
+    ColumnSpec(
+        "is_complete_lap",
+        _OPTIONAL,
+        True,
+        "Whether the containing lap is confirmed complete.",
+    ),
+    ColumnSpec(
+        "is_valid_lap",
+        _OPTIONAL,
+        True,
+        "Whether the containing lap passes lap-quality validation.",
+    ),
+    ColumnSpec(
+        "valid_for_comparison",
+        _REQUIRED,
+        True,
+        "Whether this pass is eligible for valid-lap segment comparisons.",
+    ),
 )
 
 SEGMENT_TABLE_SPECS = (
     TableSpec(
         "segments/passes",
-        column_specs(
-            _PASS_COLUMNS,
-            required=frozenset(
-                {
-                    "session_id",
-                    "lap_id",
-                    "segment_id",
-                    "segment_name",
-                    "valid_for_comparison",
-                    "segment_time_s",
-                    "entry_speed_kmh",
-                    "minimum_speed_kmh",
-                    "exit_speed_kmh",
-                    "brake_onset_track_s_m",
-                    "full_throttle_commit_track_s_m",
-                    "coasting_time_s",
-                }
-            ),
-            non_nullable=frozenset({"session_id", "lap_id", "segment_id"}),
-        ),
+        _PASS_COLUMN_SPECS,
         ("session_id", "lap_id", "segment_id"),
         False,
         MergeMode.KEYED,

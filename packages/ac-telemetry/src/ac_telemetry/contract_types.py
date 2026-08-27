@@ -25,7 +25,9 @@ class MergeMode(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ColumnSpec:
     name: str
+    # Whether this column must be present in the table schema.
     availability: ColumnAvailability
+    # Whether values in this column may be null when the column is present.
     nullable: bool
     description: str
 
@@ -195,26 +197,3 @@ class DatasetContract:
             ordered.extend(ready)
             selected = [table for table in selected if table not in ready]
         return tuple(ordered)
-
-
-def column_specs(
-    names: Iterable[str],
-    *,
-    required: frozenset[str] = frozenset(),
-    nullable: bool = True,
-    non_nullable: frozenset[str] = frozenset(),
-) -> tuple[ColumnSpec, ...]:
-    """Create plain persisted-column declarations with concise default docs."""
-    return tuple(
-        ColumnSpec(
-            name=name,
-            availability=(
-                ColumnAvailability.REQUIRED
-                if name in required
-                else ColumnAvailability.OPTIONAL
-            ),
-            nullable=nullable and name not in non_nullable,
-            description=f"Persisted {name} field.",
-        )
-        for name in names
-    )

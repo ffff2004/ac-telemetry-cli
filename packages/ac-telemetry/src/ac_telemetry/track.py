@@ -10,7 +10,7 @@ import pandas as pd
 from scipy.spatial import cKDTree
 
 from .config import ProcessingConfig
-from .contract_types import MergeMode, TableSpec, column_specs
+from .contract_types import ColumnAvailability, ColumnSpec, MergeMode, TableSpec
 from .sections import parse_sections_ini
 from .util import sha256_file
 
@@ -46,42 +46,231 @@ _AI_PAYLOAD_FIELDS = (
 _PROJECTION_CHUNK_SIZE = 8_192
 _CANDIDATE_CHUNK_SIZE = 262_144
 
-_REFERENCE_COLUMNS = (
-    "reference_index",
-    "x",
-    "y",
-    "z",
-    "track_s_m",
-    "track_progress",
-    "stored_distance_m",
-    "tangent_x",
-    "tangent_y",
-    "tangent_z",
-    "heading_rad",
-    "curvature_1pm",
-    *_AI_PAYLOAD_FIELDS,
+_REFERENCE_COLUMN_SPECS = (
+    ColumnSpec(
+        "reference_index",
+        ColumnAvailability.OPTIONAL,
+        False,
+        "Zero-based index of the point in the AI spline reference.",
+    ),
+    ColumnSpec(
+        "x",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "World-space X coordinate of the AI spline reference point, in metres.",
+    ),
+    ColumnSpec(
+        "y",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "World-space Y coordinate of the AI spline reference point, in metres.",
+    ),
+    ColumnSpec(
+        "z",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "World-space Z coordinate of the AI spline reference point, in metres.",
+    ),
+    ColumnSpec(
+        "track_s_m",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Geometrically reconstructed arc distance along the AI spline, in metres.",
+    ),
+    ColumnSpec(
+        "track_progress",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "AI-spline arc distance normalized by its total length.",
+    ),
+    ColumnSpec(
+        "stored_distance_m",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Cumulative distance stored in the source AI spline, in metres.",
+    ),
+    ColumnSpec(
+        "tangent_x",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "X component of the unit tangent along the AI spline.",
+    ),
+    ColumnSpec(
+        "tangent_y",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Y component of the unit tangent along the AI spline.",
+    ),
+    ColumnSpec(
+        "tangent_z",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Z component of the unit tangent along the AI spline.",
+    ),
+    ColumnSpec(
+        "heading_rad",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Horizontal heading of the AI-spline tangent, in radians.",
+    ),
+    ColumnSpec(
+        "curvature_1pm",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Signed horizontal curvature of the AI spline, in inverse metres.",
+    ),
+    ColumnSpec(
+        "ai_speed",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "AI speed payload stored for this reference point.",
+    ),
+    ColumnSpec(
+        "ai_throttle",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "AI throttle payload stored for this reference point.",
+    ),
+    ColumnSpec(
+        "ai_brake",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "AI brake payload stored for this reference point.",
+    ),
+    ColumnSpec(
+        "ai_obsolete_lat_g",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Legacy lateral-G payload stored in the AI spline.",
+    ),
+    ColumnSpec(
+        "ai_radius_m",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "AI spline radius payload, in metres.",
+    ),
+    ColumnSpec(
+        "side_left_m",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Usable AI-defined track width to the left of the reference point, in metres.",
+    ),
+    ColumnSpec(
+        "side_right_m",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Usable AI-defined track width to the right of the reference point, in metres.",
+    ),
+    ColumnSpec(
+        "ai_camber_value",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Camber-value payload stored in the AI spline.",
+    ),
+    ColumnSpec(
+        "ai_camber_direction",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Camber-direction payload stored in the AI spline.",
+    ),
+    ColumnSpec(
+        "ai_normal_x",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "X component of the source AI-spline normal payload.",
+    ),
+    ColumnSpec(
+        "ai_normal_y",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Y component of the source AI-spline normal payload.",
+    ),
+    ColumnSpec(
+        "ai_normal_z",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Z component of the source AI-spline normal payload.",
+    ),
+    ColumnSpec(
+        "ai_segment_length_m",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Segment-length payload stored in the AI spline, in metres.",
+    ),
+    ColumnSpec(
+        "ai_forward_x",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "X component of the source AI-spline forward-vector payload.",
+    ),
+    ColumnSpec(
+        "ai_forward_y",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Y component of the source AI-spline forward-vector payload.",
+    ),
+    ColumnSpec(
+        "ai_forward_z",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Z component of the source AI-spline forward-vector payload.",
+    ),
+    ColumnSpec(
+        "ai_tag",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Tag payload stored in the AI spline.",
+    ),
+    ColumnSpec(
+        "ai_grade",
+        ColumnAvailability.OPTIONAL,
+        True,
+        "Grade payload stored in the AI spline.",
+    ),
 )
 
 TRACK_TABLE_SPECS = (
     TableSpec(
         "track/reference",
-        column_specs(_REFERENCE_COLUMNS, non_nullable=frozenset({"reference_index"})),
+        _REFERENCE_COLUMN_SPECS,
         ("reference_index",),
         True,
         MergeMode.STATIC_EQUAL,
     ),
     TableSpec(
         "track/pit_reference",
-        column_specs(_REFERENCE_COLUMNS, non_nullable=frozenset({"reference_index"})),
+        _REFERENCE_COLUMN_SPECS,
         ("reference_index",),
         False,
         MergeMode.STATIC_EQUAL,
     ),
     TableSpec(
         "track/sections",
-        column_specs(
-            ("section_id", "section_name", "start_progress", "end_progress"),
-            non_nullable=frozenset({"section_id"}),
+        (
+            ColumnSpec(
+                "section_id",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Assetto Corsa SECTION_* identifier from sections.ini.",
+            ),
+            ColumnSpec(
+                "section_name",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Human-readable section name from sections.ini.",
+            ),
+            ColumnSpec(
+                "start_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized AI-spline progress at the section entry.",
+            ),
+            ColumnSpec(
+                "end_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized AI-spline progress at the section exit.",
+            ),
         ),
         ("section_id",),
         False,
@@ -89,9 +278,31 @@ TRACK_TABLE_SPECS = (
     ),
     TableSpec(
         "track/drs_zones",
-        column_specs(
-            ("drs_zone_id", "detection_progress", "start_progress", "end_progress"),
-            non_nullable=frozenset({"drs_zone_id"}),
+        (
+            ColumnSpec(
+                "drs_zone_id",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Assetto Corsa ZONE_* identifier from drs_zones.ini.",
+            ),
+            ColumnSpec(
+                "detection_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized AI-spline progress of the DRS detection point.",
+            ),
+            ColumnSpec(
+                "start_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized AI-spline progress at DRS activation-zone entry.",
+            ),
+            ColumnSpec(
+                "end_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized AI-spline progress at DRS activation-zone exit.",
+            ),
         ),
         ("drs_zone_id",),
         False,
