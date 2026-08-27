@@ -3,6 +3,396 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
+from .contract_types import ColumnAvailability, ColumnSpec, MergeMode, TableSpec
+
+_OPTIONAL = ColumnAvailability.OPTIONAL
+
+_STATISTICS_COLUMN_SPECS = (
+    ColumnSpec(
+        "setup_id",
+        _OPTIONAL,
+        True,
+        "Identifier of the setup assigned to the source session.",
+    ),
+    ColumnSpec("segment_id", _OPTIONAL, False, "Identifier of the configured segment."),
+    ColumnSpec(
+        "segment_name", _OPTIONAL, True, "Display name of the configured segment."
+    ),
+    ColumnSpec(
+        "valid_pass_count", _OPTIONAL, False, "Number of passes valid for comparison."
+    ),
+    ColumnSpec(
+        "total_pass_count",
+        _OPTIONAL,
+        False,
+        "Number of passes, including invalid passes.",
+    ),
+    ColumnSpec(
+        "time_s_count", _OPTIONAL, True, "Number of numeric segment-time observations."
+    ),
+    ColumnSpec("time_s_mean", _OPTIONAL, True, "Mean segment time, in seconds."),
+    ColumnSpec("time_s_median", _OPTIONAL, True, "Median segment time, in seconds."),
+    ColumnSpec(
+        "time_s_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of segment time, in seconds.",
+    ),
+    ColumnSpec(
+        "time_s_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of segment time, in seconds.",
+    ),
+    ColumnSpec("time_s_min", _OPTIONAL, True, "Shortest segment time, in seconds."),
+    ColumnSpec(
+        "time_s_p25", _OPTIONAL, True, "25th percentile of segment time, in seconds."
+    ),
+    ColumnSpec(
+        "time_s_p75", _OPTIONAL, True, "75th percentile of segment time, in seconds."
+    ),
+    ColumnSpec("time_s_max", _OPTIONAL, True, "Longest segment time, in seconds."),
+    ColumnSpec(
+        "entry_speed_kmh_count",
+        _OPTIONAL,
+        True,
+        "Number of numeric segment-entry-speed observations.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_mean",
+        _OPTIONAL,
+        True,
+        "Mean speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_median",
+        _OPTIONAL,
+        True,
+        "Median speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_min",
+        _OPTIONAL,
+        True,
+        "Lowest speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_p25",
+        _OPTIONAL,
+        True,
+        "25th percentile of speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_p75",
+        _OPTIONAL,
+        True,
+        "75th percentile of speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "entry_speed_kmh_max",
+        _OPTIONAL,
+        True,
+        "Highest speed at segment entry, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_count",
+        _OPTIONAL,
+        True,
+        "Number of numeric minimum-speed observations.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_mean",
+        _OPTIONAL,
+        True,
+        "Mean minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_median",
+        _OPTIONAL,
+        True,
+        "Median minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_min",
+        _OPTIONAL,
+        True,
+        "Lowest minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_p25",
+        _OPTIONAL,
+        True,
+        "25th percentile of minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_p75",
+        _OPTIONAL,
+        True,
+        "75th percentile of minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "minimum_speed_kmh_max",
+        _OPTIONAL,
+        True,
+        "Highest minimum speed in the segment, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_count",
+        _OPTIONAL,
+        True,
+        "Number of numeric segment-exit-speed observations.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_mean",
+        _OPTIONAL,
+        True,
+        "Mean speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_median",
+        _OPTIONAL,
+        True,
+        "Median speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_min",
+        _OPTIONAL,
+        True,
+        "Lowest speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_p25",
+        _OPTIONAL,
+        True,
+        "25th percentile of speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_p75",
+        _OPTIONAL,
+        True,
+        "75th percentile of speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "exit_speed_kmh_max",
+        _OPTIONAL,
+        True,
+        "Highest speed at segment exit, in kilometres per hour.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_count",
+        _OPTIONAL,
+        True,
+        "Number of numeric braking-onset-coordinate observations.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_mean",
+        _OPTIONAL,
+        True,
+        "Mean braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_median",
+        _OPTIONAL,
+        True,
+        "Median braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_min",
+        _OPTIONAL,
+        True,
+        "Earliest braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_p25",
+        _OPTIONAL,
+        True,
+        "25th percentile of braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_p75",
+        _OPTIONAL,
+        True,
+        "75th percentile of braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "brake_start_track_s_m_max",
+        _OPTIONAL,
+        True,
+        "Latest braking-onset track coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_count",
+        _OPTIONAL,
+        True,
+        "Number of numeric full-throttle-commit-coordinate observations.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_mean",
+        _OPTIONAL,
+        True,
+        "Mean sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_median",
+        _OPTIONAL,
+        True,
+        "Median sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_min",
+        _OPTIONAL,
+        True,
+        "Earliest sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_p25",
+        _OPTIONAL,
+        True,
+        "25th percentile of sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_p75",
+        _OPTIONAL,
+        True,
+        "75th percentile of sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "full_throttle_commit_track_s_m_max",
+        _OPTIONAL,
+        True,
+        "Latest sustained-full-throttle commitment coordinate, in metres.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_count",
+        _OPTIONAL,
+        True,
+        "Number of numeric coasting-time observations.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_mean", _OPTIONAL, True, "Mean time spent coasting, in seconds."
+    ),
+    ColumnSpec(
+        "coasting_time_s_median",
+        _OPTIONAL,
+        True,
+        "Median time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_std",
+        _OPTIONAL,
+        True,
+        "Sample standard deviation of time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_mad",
+        _OPTIONAL,
+        True,
+        "Median absolute deviation of time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_min",
+        _OPTIONAL,
+        True,
+        "Shortest time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_p25",
+        _OPTIONAL,
+        True,
+        "25th percentile of time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_p75",
+        _OPTIONAL,
+        True,
+        "75th percentile of time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "coasting_time_s_max",
+        _OPTIONAL,
+        True,
+        "Longest time spent coasting, in seconds.",
+    ),
+    ColumnSpec(
+        "best_3_mean_time_s",
+        _OPTIONAL,
+        True,
+        "Mean segment time of up to three fastest valid passes, or all passes when none is valid, in seconds.",
+    ),
+)
+
+SUMMARY_TABLE_SPECS = (
+    TableSpec(
+        "summaries/segment_statistics",
+        _STATISTICS_COLUMN_SPECS,
+        None,
+        False,
+        MergeMode.REBUILD,
+        rebuild_from=("segments/passes", "sessions"),
+        empty_frame_columns=(),
+    ),
+)
+
 
 def _stats(group: pd.Series, prefix: str) -> dict[str, float | int | None]:
     values = pd.to_numeric(group, errors="coerce").dropna().to_numpy(float)

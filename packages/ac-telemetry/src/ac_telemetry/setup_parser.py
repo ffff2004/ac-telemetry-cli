@@ -4,6 +4,7 @@ from typing import Any
 
 import pandas as pd
 
+from .contract_types import ColumnAvailability, ColumnSpec, MergeMode, TableSpec
 from .util import sha256_file, stable_id
 
 CATEGORY_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -26,6 +27,142 @@ CATEGORY_PREFIXES: tuple[tuple[str, str], ...] = (
     ("BUMP_STOP", "suspension"),
     ("PACKER", "suspension"),
     ("ROD_LENGTH", "ride_height"),
+)
+
+SETUP_TABLE_SPECS = (
+    TableSpec(
+        "setup/normalized",
+        (
+            ColumnSpec(
+                "setup_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Stable identifier for the setup file content.",
+            ),
+            ColumnSpec(
+                "setup_label",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Human-readable setup label supplied with the input.",
+            ),
+            ColumnSpec(
+                "source_file",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Original setup INI filename.",
+            ),
+            ColumnSpec(
+                "source_hash",
+                ColumnAvailability.REQUIRED,
+                False,
+                "SHA-256 digest of the source setup file.",
+            ),
+            ColumnSpec(
+                "section",
+                ColumnAvailability.REQUIRED,
+                False,
+                "INI section containing the setup parameter.",
+            ),
+            ColumnSpec(
+                "parameter",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Parameter name within the INI section.",
+            ),
+            ColumnSpec(
+                "raw_value",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Unmodified parameter value read from the INI file.",
+            ),
+            ColumnSpec(
+                "value_numeric",
+                ColumnAvailability.REQUIRED,
+                True,
+                "Numeric interpretation of the parameter value, when applicable.",
+            ),
+            ColumnSpec(
+                "value_text",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Canonical text representation of the parsed parameter value.",
+            ),
+            ColumnSpec(
+                "category",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Functional setup category inferred from the INI section.",
+            ),
+        ),
+        ("setup_id", "section", "parameter"),
+        False,
+        MergeMode.KEYED,
+        ignored_identity_columns=frozenset({"setup_label", "source_file"}),
+    ),
+    TableSpec(
+        "setup/diffs",
+        (
+            ColumnSpec(
+                "base_setup_id",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Setup identifier used as the comparison baseline.",
+            ),
+            ColumnSpec(
+                "comparison_setup_id",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Setup identifier compared with the baseline.",
+            ),
+            ColumnSpec(
+                "section",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "INI section containing the compared parameter.",
+            ),
+            ColumnSpec(
+                "parameter",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Parameter name compared within the INI section.",
+            ),
+            ColumnSpec(
+                "category",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Functional setup category inferred from the INI section.",
+            ),
+            ColumnSpec(
+                "base_value",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Parsed text value in the baseline setup, if that parameter exists.",
+            ),
+            ColumnSpec(
+                "comparison_value",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Parsed text value in the comparison setup, if that parameter exists.",
+            ),
+            ColumnSpec(
+                "absolute_numeric_change",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Comparison numeric value minus baseline numeric value, when both exist.",
+            ),
+            ColumnSpec(
+                "values_equal",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Whether both setups contain equal parsed text values for the parameter.",
+            ),
+        ),
+        None,
+        False,
+        MergeMode.REBUILD,
+        rebuild_from=("setup/normalized",),
+        omit_if_empty=True,
+    ),
 )
 
 

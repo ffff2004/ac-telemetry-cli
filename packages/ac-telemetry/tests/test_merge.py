@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from ac_telemetry.cli import main
+from ac_telemetry.dataset_contract import DATASET_CONTRACT
 from ac_telemetry.manifest import DATASET_SCHEMA_VERSION, table_manifest
 from ac_telemetry.merge import merge_datasets
 from ac_telemetry.storage import DatasetStorage, TableRef
@@ -620,6 +621,50 @@ def test_merge_rejects_keyed_quality_conflicts(tmp_path: Path) -> None:
         merge_datasets([left, right], tmp_path / "output")
 
 
+def test_merge_aligns_missing_optional_and_preserves_opaque_columns(
+    tmp_path: Path,
+) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _write_dataset(
+        left, session_id="same", setup_label="baseline", setup_source="/a.ini"
+    )
+    _write_dataset(
+        right, session_id="same", setup_label="alternate", setup_source="/b.ini"
+    )
+    storage = DatasetStorage(right)
+    sessions = storage.read("sessions.parquet")
+    sessions["driver_name"] = "Alex"
+    sessions["producer_extension"] = "kept"
+    _replace_table(right, "sessions", sessions)
+
+    output = tmp_path / "output"
+    merge_datasets([left, right], output)
+
+    merged = DatasetStorage(output).read("sessions.parquet")
+    assert merged.loc[0, "driver_name"] == "Alex"
+    assert merged.loc[0, "producer_extension"] == "kept"
+
+
+def test_merge_rejects_conflicting_opaque_duplicate_values(tmp_path: Path) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _write_dataset(
+        left, session_id="same", setup_label="baseline", setup_source="/a.ini"
+    )
+    _write_dataset(
+        right, session_id="same", setup_label="alternate", setup_source="/b.ini"
+    )
+    for root, value in ((left, "one"), (right, "two")):
+        storage = DatasetStorage(root)
+        sessions = storage.read("sessions.parquet")
+        sessions["opaque_extension"] = value
+        _replace_table(root, "sessions", sessions)
+
+    with pytest.raises(ValueError, match="Conflicting records for 'sessions'"):
+        merge_datasets([left, right], tmp_path / "output")
+
+
 def test_merge_rejects_incompatible_inputs_without_replacing_output(
     tmp_path: Path,
 ) -> None:
@@ -705,6 +750,86 @@ def test_merge_rejects_schema_and_static_track_conflicts(tmp_path: Path) -> None
         merge_datasets([left, old_schema], tmp_path / "schema-output")
     with pytest.raises(ValueError, match="Static track table"):
         merge_datasets([left, wrong_track], tmp_path / "track-output")
+
+
+def test_merge_rejects_distinct_static_rows_instead_of_unioning_them(
+    tmp_path: Path,
+) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _write_dataset(
+        left, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    _write_dataset(
+        right, session_id="two", setup_label="baseline", setup_source="/b.ini"
+    )
+    spec = DATASET_CONTRACT.table("track/reference")
+    assert spec is not None
+    columns = [column.name for column in spec.columns]
+    for root, reference_index in ((left, 0), (right, 1)):
+        reference = pd.DataFrame(
+            [
+                {
+                    column: reference_index if column == "reference_index" else 0.0
+                    for column in columns
+                }
+            ]
+        )
+        _replace_table(root, "track/reference", reference)
+
+    with pytest.raises(ValueError, match="Static track table 'track/reference'"):
+        merge_datasets([left, right], tmp_path / "output")
+
+
+def test_merge_preserves_static_optional_additions_without_adding_rows(
+    tmp_path: Path,
+) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _write_dataset(
+        left, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    _write_dataset(
+        right, session_id="two", setup_label="baseline", setup_source="/b.ini"
+    )
+    spec = DATASET_CONTRACT.table("track/reference")
+    assert spec is not None
+    columns = [column.name for column in spec.columns]
+    left_reference = {
+        column: "left-metadata" if column == "ai_tag" else 0.0 for column in columns
+    }
+    right_reference = {column: 0.0 for column in columns if column != "ai_tag"}
+    right_reference["new_metadata"] = "newer"
+    _replace_table(left, "track/reference", pd.DataFrame([left_reference]))
+    _replace_table(right, "track/reference", pd.DataFrame([right_reference]))
+
+    output = tmp_path / "output"
+    merge_datasets([left, right], output)
+
+    reference = DatasetStorage(output).read("track/reference.parquet")
+    assert len(reference) == 1
+    assert reference.loc[0, "ai_tag"] == "left-metadata"
+    assert reference.loc[0, "new_metadata"] == "newer"
+
+
+def test_merge_regenerates_rebuild_tables_from_their_prerequisites(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    _append_setup(source, setup_id="setup-b", raw_value=4, normalized_value=4)
+
+    output = tmp_path / "output"
+    merge_datasets([source], output)
+
+    diffs = DatasetStorage(output).read("setup/diffs.parquet")
+    assert not diffs.empty
+    assert "stale" not in diffs.columns
+    statistics = DatasetStorage(output).read("summaries/segment_statistics.parquet")
+    assert not statistics.empty
+    assert "stale" not in statistics.columns
 
 
 def test_merge_cli_overwrite_is_required(

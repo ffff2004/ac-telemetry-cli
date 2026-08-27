@@ -6,6 +6,13 @@ import pandas as pd
 
 from .assist_activity import detect_abs_activity, detect_tc_activity
 from .config import ProcessingConfig
+from .contract_types import (
+    ColumnAvailability,
+    ColumnSpec,
+    ForeignKey,
+    MergeMode,
+    TableSpec,
+)
 from .util import contiguous_true_runs, stable_id
 
 WHEELS = ("fl", "fr", "rl", "rr")
@@ -43,6 +50,564 @@ RELATION_COLUMNS = [
     "b_coverage",
     "gap_s",
 ]
+
+EVENT_TABLE_SPECS = (
+    TableSpec(
+        "events/index",
+        (
+            ColumnSpec(
+                "event_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Stable identifier for the detected event.",
+            ),
+            ColumnSpec(
+                "session_id",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Identifier of the session containing the event.",
+            ),
+            ColumnSpec(
+                "lap_id",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Identifier of the lap containing the event.",
+            ),
+            ColumnSpec(
+                "event_type",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Detected event category, such as braking, shift, or lockup.",
+            ),
+            ColumnSpec(
+                "start_sample",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Inclusive source-sample index at the event start.",
+            ),
+            ColumnSpec(
+                "end_sample_exclusive",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Exclusive source-sample index immediately after the event end.",
+            ),
+            ColumnSpec(
+                "start_time_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Lap-relative time in seconds at the event start.",
+            ),
+            ColumnSpec(
+                "end_time_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Lap-relative time in seconds immediately after the event end.",
+            ),
+            ColumnSpec(
+                "span_duration_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Wall-clock duration in seconds of the full event span.",
+            ),
+            ColumnSpec(
+                "active_duration_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Duration in seconds of samples satisfying the event predicate.",
+            ),
+            ColumnSpec(
+                "start_track_s_m",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Track distance in metres at the event start.",
+            ),
+            ColumnSpec(
+                "end_track_s_m",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Track distance in metres at the event end.",
+            ),
+            ColumnSpec(
+                "start_track_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized track progress at the event start.",
+            ),
+            ColumnSpec(
+                "end_track_progress",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized track progress at the event end.",
+            ),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("session_id",), "sessions", ("session_id",)),
+            ForeignKey(("lap_id",), "laps", ("lap_id",)),
+            ForeignKey(("session_id", "lap_id"), "laps", ("session_id", "lap_id")),
+        ),
+    ),
+    TableSpec(
+        "events/braking",
+        (
+            ColumnSpec(
+                "event_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Identifier of the corresponding braking event in events/index.",
+            ),
+            ColumnSpec(
+                "entry_speed_kmh",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Vehicle speed in km/h at brake-event entry.",
+            ),
+            ColumnSpec(
+                "release_speed_kmh",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Vehicle speed in km/h at brake-event release.",
+            ),
+            ColumnSpec(
+                "minimum_speed_kmh",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Lowest vehicle speed in km/h during the event.",
+            ),
+            ColumnSpec(
+                "peak_brake",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Maximum normalized brake input during the event.",
+            ),
+            ColumnSpec(
+                "mean_brake",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Mean normalized brake input during the event.",
+            ),
+            ColumnSpec(
+                "brake_impulse_proxy_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Time-integral proxy of normalized brake input, in seconds.",
+            ),
+            ColumnSpec(
+                "time_to_90pct_peak_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Seconds from event start until brake input reaches 90% of its peak.",
+            ),
+            ColumnSpec(
+                "release_duration_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Duration in seconds from peak brake input through event release.",
+            ),
+            ColumnSpec(
+                "release_slope_per_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Brake-input slope per second from peak through release.",
+            ),
+            ColumnSpec(
+                "release_monotonicity",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Fraction of release transitions that do not increase materially.",
+            ),
+            ColumnSpec(
+                "steer_at_start",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Steering angle at brake-event entry.",
+            ),
+            ColumnSpec(
+                "steer_at_release",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Steering angle at brake-event release.",
+            ),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/throttle",
+        (
+            ColumnSpec(
+                "event_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Identifier of the corresponding throttle event in events/index.",
+            ),
+            ColumnSpec(
+                "start_speed_kmh",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Vehicle speed in km/h at throttle-event start.",
+            ),
+            ColumnSpec(
+                "initial_throttle",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Normalized throttle input at the event start.",
+            ),
+            ColumnSpec(
+                "peak_throttle",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Maximum normalized throttle input during the event.",
+            ),
+            ColumnSpec(
+                "time_to_50pct_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Seconds from event start until throttle reaches 50%.",
+            ),
+            ColumnSpec(
+                "time_to_full_throttle_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Seconds from event start until throttle reaches the full-throttle threshold.",
+            ),
+            ColumnSpec(
+                "ramp_rate_per_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Peak normalized throttle divided by the pickup duration, per second.",
+            ),
+            ColumnSpec(
+                "steer_at_pickup",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Steering angle at throttle pickup.",
+            ),
+            ColumnSpec(
+                "steer_at_full_throttle",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Steering angle when the full-throttle threshold is first reached.",
+            ),
+            ColumnSpec(
+                "velocity_heading_rate_at_pickup_rad_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Velocity-heading angular rate in rad/s at throttle pickup.",
+            ),
+            ColumnSpec(
+                "countersteer_proxy",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Whether steering angle changes sign within the event.",
+            ),
+            ColumnSpec(
+                "throttle_lift_within_event",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Whether throttle drops by more than 0.20 within the event.",
+            ),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/shifts",
+        (
+            ColumnSpec(
+                "event_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Identifier of the corresponding shift event in events/index.",
+            ),
+            ColumnSpec(
+                "from_gear",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Stable physical gear before the shift transition.",
+            ),
+            ColumnSpec(
+                "to_gear",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Stable physical gear after the shift transition.",
+            ),
+            ColumnSpec(
+                "direction",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Shift direction: up or down.",
+            ),
+            ColumnSpec(
+                "speed_before_kmh",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Vehicle speed in km/h immediately before the shift.",
+            ),
+            ColumnSpec(
+                "speed_after_kmh",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Vehicle speed in km/h when the destination gear is confirmed.",
+            ),
+            ColumnSpec(
+                "rpm_before",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Engine speed immediately before the shift.",
+            ),
+            ColumnSpec(
+                "rpm_after",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Engine speed when the destination gear is confirmed.",
+            ),
+            ColumnSpec(
+                "rpm_delta",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Engine-speed change across the shift.",
+            ),
+            ColumnSpec(
+                "track_long_g_before",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Longitudinal acceleration in g immediately before the shift.",
+            ),
+            ColumnSpec(
+                "track_long_g_after",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Longitudinal acceleration in g when the destination gear is confirmed.",
+            ),
+            ColumnSpec(
+                "neutral_duration_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Time in seconds spent in neutral during the shift transition.",
+            ),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/wheel_slip",
+        (
+            ColumnSpec(
+                "event_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Identifier of the corresponding wheel-slip event in events/index.",
+            ),
+            ColumnSpec(
+                "slip_kind",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Longitudinal slip classification: lockup or wheelspin.",
+            ),
+            ColumnSpec(
+                "wheel",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Wheel where longitudinal slip was detected: fl, fr, rl, or rr.",
+            ),
+            ColumnSpec(
+                "driven_status",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Whether the wheel is driven, not driven, or unknown for the vehicle.",
+            ),
+            ColumnSpec(
+                "extreme_slip_ratio",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Most negative lockup ratio or most positive wheelspin ratio.",
+            ),
+            ColumnSpec(
+                "onset_slip_ratio",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Slip ratio at the first active sample.",
+            ),
+            ColumnSpec(
+                "recovery_slip_ratio",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Slip ratio at the last active sample.",
+            ),
+            ColumnSpec(
+                "mean_slip_ratio",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Mean slip ratio over active samples.",
+            ),
+            ColumnSpec(
+                "slip_integral_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Time integral of absolute slip ratio over active samples, in seconds.",
+            ),
+            ColumnSpec(
+                "entry_speed_kmh",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Vehicle speed in km/h at the first active sample.",
+            ),
+            ColumnSpec(
+                "exit_speed_kmh",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Vehicle speed in km/h at the last active sample.",
+            ),
+            ColumnSpec(
+                "mean_brake",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Mean normalized brake input over active samples.",
+            ),
+            ColumnSpec(
+                "mean_throttle",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Mean normalized throttle input over active samples.",
+            ),
+            ColumnSpec(
+                "mean_wheel_load",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Mean load on the affected wheel over active samples.",
+            ),
+            ColumnSpec(
+                "mean_abs_steer",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Mean absolute steering angle over active samples.",
+            ),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/relations",
+        (
+            ColumnSpec(
+                "relation_id",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Stable identifier for the relationship between two events.",
+            ),
+            ColumnSpec(
+                "event_id_a",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Identifier of the earlier event in the relation.",
+            ),
+            ColumnSpec(
+                "event_id_b",
+                ColumnAvailability.REQUIRED,
+                False,
+                "Identifier of the later event in the relation.",
+            ),
+            ColumnSpec(
+                "event_type_a",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Event category of event_id_a.",
+            ),
+            ColumnSpec(
+                "event_type_b",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Event category of event_id_b.",
+            ),
+            ColumnSpec(
+                "relation_type",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Relationship classification: overlap or near.",
+            ),
+            ColumnSpec(
+                "overlap_start_time_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Lap-relative overlap start time in seconds, when events overlap.",
+            ),
+            ColumnSpec(
+                "overlap_end_time_s",
+                ColumnAvailability.OPTIONAL,
+                True,
+                "Lap-relative overlap end time in seconds, when events overlap.",
+            ),
+            ColumnSpec(
+                "overlap_duration_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Duration in seconds shared by the two event spans.",
+            ),
+            ColumnSpec(
+                "coactive_duration_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Duration in seconds when both event predicates are active.",
+            ),
+            ColumnSpec(
+                "a_coverage",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Fraction of event_id_a's span covered by the overlap.",
+            ),
+            ColumnSpec(
+                "b_coverage",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Fraction of event_id_b's span covered by the overlap.",
+            ),
+            ColumnSpec(
+                "gap_s",
+                ColumnAvailability.OPTIONAL,
+                False,
+                "Non-overlap gap in seconds between the event spans.",
+            ),
+        ),
+        ("relation_id",),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("event_id_a",), "events/index", ("event_id",)),
+            ForeignKey(("event_id_b",), "events/index", ("event_id",)),
+        ),
+    ),
+)
+
+EVENT_TABLE_SPECS_BY_NAME = {table.name: table for table in EVENT_TABLE_SPECS}
+
+
+def _event_columns(logical_name: str) -> tuple[str, ...]:
+    return tuple(
+        column.name for column in EVENT_TABLE_SPECS_BY_NAME[logical_name].columns
+    )
+
+
+def _event_empty_columns(logical_name: str) -> tuple[str, ...]:
+    columns = EVENT_TABLE_SPECS_BY_NAME[logical_name].empty_frame_columns
+    if columns is None:
+        raise AssertionError(f"Event table {logical_name!r} has no empty layout")
+    return columns
+
 
 _COMMON_INTERNAL_COLUMNS = {
     "event_id",
@@ -585,13 +1150,14 @@ def _event_index(frames: list[pd.DataFrame]) -> pd.DataFrame:
     )
 
 
-def _detail(frame: pd.DataFrame) -> pd.DataFrame:
+def _detail(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...],
+    empty_columns: tuple[str, ...],
+) -> pd.DataFrame:
     if frame.empty:
-        return pd.DataFrame(columns=["event_id"])
-    columns = ["event_id"] + [
-        column for column in frame.columns if column not in _COMMON_INTERNAL_COLUMNS
-    ]
-    return cast(pd.DataFrame, frame[columns].copy())
+        return pd.DataFrame(columns=empty_columns)
+    return cast(pd.DataFrame, frame[list(columns)].copy())
 
 
 def _active_sample_durations(row: pd.Series) -> dict[int, float]:
@@ -699,10 +1265,26 @@ def detect_events(
     core_frames = [braking, throttle, shifts, wheel_slip]
     return EventDataset(
         events=_event_index(core_frames + [abs_activity, tc_activity]),
-        braking=_detail(braking),
-        throttle=_detail(throttle),
-        shifts=_detail(shifts),
-        wheel_slip=_detail(wheel_slip),
+        braking=_detail(
+            braking,
+            _event_columns("events/braking"),
+            _event_empty_columns("events/braking"),
+        ),
+        throttle=_detail(
+            throttle,
+            _event_columns("events/throttle"),
+            _event_empty_columns("events/throttle"),
+        ),
+        shifts=_detail(
+            shifts,
+            _event_columns("events/shifts"),
+            _event_empty_columns("events/shifts"),
+        ),
+        wheel_slip=_detail(
+            wheel_slip,
+            _event_columns("events/wheel_slip"),
+            _event_empty_columns("events/wheel_slip"),
+        ),
         relations=_build_relations(core_frames, config.event_near_shift_s),
         abs_activity=abs_activity,
         tc_activity=tc_activity,

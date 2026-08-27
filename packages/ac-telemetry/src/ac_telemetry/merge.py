@@ -20,46 +20,17 @@ import numpy as np
 import pandas as pd
 
 from . import __version__
+from .contract_types import MergeMode, TableSpec
+from .dataset_contract import DATASET_CONTRACT
 from .manifest import DATASET_SCHEMA_VERSION, require_compatible_schema, table_manifest
 from .pipeline import load_dataset_table
 from .setup_parser import build_setup_diffs
 from .storage import DatasetStorage, TableRef
 from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, json_load, stable_id
-from .validation import (
-    STABLE_KEY_COLUMNS,
-    require_valid_dataset,
-    validate_dataset,
-)
+from .validation import require_valid_dataset, validate_dataset
 
-_GENERATED_TABLES = {
-    "setup/diffs",
-    "summaries/segment_statistics",
-}
-_STATIC_TABLE_PREFIX = "track/"
-_REQUIRED_TABLES = {"sessions", "laps", "samples", "track/reference"}
-_OPTIONAL_TABLES = {
-    "quality/flags",
-    "setup/normalized",
-    "setup/diffs",
-    "segments/passes",
-    "summaries/segment_statistics",
-    "events/index",
-    "events/braking",
-    "events/throttle",
-    "events/shifts",
-    "events/wheel_slip",
-    "events/relations",
-    "events/abs_activity",
-    "events/tc_activity",
-    "track/pit_reference",
-    "track/sections",
-    "track/drs_zones",
-}
-_DISPLAY_COLUMNS = {"source_file", "source_name", "setup_label"}
 _TRACK_DISPLAY_FIELDS = {"track_dir", "reference_source", "pit_reference_source"}
-
-_KEY_COLUMNS = STABLE_KEY_COLUMNS
 
 
 def _canonical(value: Any) -> Any:
@@ -109,7 +80,7 @@ def _without_display_values(value: Any, *, track_metadata: bool = False) -> Any:
         return {
             str(key): _without_display_values(item, track_metadata=track_metadata)
             for key, item in value.items()
-            if str(key) not in ignored and str(key) not in _DISPLAY_COLUMNS
+            if str(key) not in ignored
         }
     if isinstance(value, np.ndarray):
         return [
@@ -126,9 +97,8 @@ def _without_display_values(value: Any, *, track_metadata: bool = False) -> Any:
 
 def _logical_record(logical_name: str, record: dict[str, Any]) -> dict[str, Any]:
     """Return table records without fields that merely describe their source."""
-    ignored = (
-        _DISPLAY_COLUMNS if logical_name in {"sessions", "setup/normalized"} else set()
-    )
+    table = DATASET_CONTRACT.table(logical_name)
+    ignored = table.ignored_identity_columns if table is not None else frozenset()
     return {column: value for column, value in record.items() if column not in ignored}
 
 
@@ -140,27 +110,15 @@ def _schema(frame: pd.DataFrame) -> tuple[tuple[str, str], ...]:
     return tuple((str(column), str(dtype)) for column, dtype in frame.dtypes.items())
 
 
-def _same_frame(left: pd.DataFrame, right: pd.DataFrame) -> bool:
-    if _schema(left) != _schema(right):
-        return False
-    return sorted(_token(record) for record in _records(left)) == sorted(
-        _token(record) for record in _records(right)
-    )
+def _is_missing(value: Any) -> bool:
+    return _canonical(value) is None
 
 
-def _key_columns(logical_name: str, frame: pd.DataFrame) -> tuple[str, ...]:
-    if logical_name in _KEY_COLUMNS:
-        return _KEY_COLUMNS[logical_name]
-    if logical_name.startswith("events/") and "event_id" in frame.columns:
-        return ("event_id",)
-    raise ValueError(f"No stable key is defined for merge table {logical_name!r}")
-
-
-def _merge_keyed(logical_name: str, frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
+def _merge_keyed(table: TableSpec, frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
     materialized = list(frames)
     if not materialized:
-        raise ValueError(f"No frames supplied for {logical_name!r}")
-    if logical_name == "segments/passes":
+        raise ValueError(f"No frames supplied for {table.name!r}")
+    if table.allows_untyped_empty_frame:
         materialized = [
             frame
             for frame in materialized
@@ -168,74 +126,169 @@ def _merge_keyed(logical_name: str, frames: Iterable[pd.DataFrame]) -> pd.DataFr
         ]
         if not materialized:
             return pd.DataFrame()
-    schema = _schema(materialized[0])
-    if any(_schema(frame) != schema for frame in materialized[1:]):
-        raise ValueError(f"Incompatible schemas for shared table {logical_name!r}")
-    keys = _key_columns(logical_name, materialized[0])
-    missing = sorted(set(keys) - set(materialized[0].columns))
-    if missing:
+    keys = table.stable_key
+    if keys is None:  # guarded by DatasetContract.validate_definition
+        raise ValueError(f"No stable key is defined for merge table {table.name!r}")
+    required = set(table.required_columns) | set(keys)
+    for frame in materialized:
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise ValueError(
+                f"Table {table.name!r} is missing required columns {missing}"
+            )
+    shared = set.intersection(*(set(frame.columns) for frame in materialized))
+    incompatible = sorted(
+        column
+        for column in shared
+        if len({str(frame[column].dtype) for frame in materialized}) != 1
+    )
+    if incompatible:
         raise ValueError(
-            f"Table {logical_name!r} is missing merge key columns {missing}"
+            f"Incompatible schemas for shared table {table.name!r}: {incompatible}"
         )
+    declared = [column.name for column in table.columns]
+    extensions = [
+        column
+        for frame in materialized
+        for column in frame.columns
+        if column not in declared
+    ]
+    output_columns = list(
+        dict.fromkeys(
+            [
+                column
+                for column in declared
+                if any(column in frame for frame in materialized)
+            ]
+            + extensions
+        )
+    )
 
     by_key: dict[str, dict[str, Any]] = {}
     for frame in materialized:
         for record in _records(frame):
             key = _token([record[column] for column in keys])
             previous = by_key.get(key)
-            if previous is not None:
-                if _token(_logical_record(logical_name, previous)) != _token(
-                    _logical_record(logical_name, record)
-                ):
+            if previous is None:
+                by_key[key] = {column: record.get(column) for column in output_columns}
+                continue
+            for column in output_columns:
+                old = previous.get(column)
+                new = record.get(column)
+                if column in table.ignored_identity_columns:
+                    if _is_missing(old) or (
+                        not _is_missing(new) and _token(new) < _token(old)
+                    ):
+                        previous[column] = new
+                elif _is_missing(old):
+                    previous[column] = new
+                elif not _is_missing(new) and _token(old) != _token(new):
                     raise ValueError(
-                        f"Conflicting records for {logical_name!r} key {key}"
+                        f"Conflicting records for {table.name!r} key {key}"
                     )
-                if _token(record) >= _token(previous):
-                    continue
-            by_key[key] = record
     ordered = [by_key[key] for key in sorted(by_key)]
-    return pd.DataFrame(ordered, columns=materialized[0].columns)
+    return pd.DataFrame(ordered, columns=output_columns)
 
 
-def _merge_normalized_setups(frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
-    """Merge setup parameters while treating names and paths as provenance."""
+def _merge_static_equal(
+    table: TableSpec, frames: Iterable[pd.DataFrame]
+) -> pd.DataFrame:
+    """Merge schema-compatible copies of one static table without adding rows."""
     materialized = list(frames)
     if not materialized:
-        raise ValueError("No setup/normalized frames supplied")
-    schema = _schema(materialized[0])
-    if any(_schema(frame) != schema for frame in materialized[1:]):
-        raise ValueError("Incompatible schemas for shared table 'setup/normalized'")
-    keys = _KEY_COLUMNS["setup/normalized"]
-    missing = sorted(set(keys) - set(materialized[0].columns))
-    if missing:
-        raise ValueError(
-            f"Table 'setup/normalized' is missing merge key columns {missing}"
-        )
-    provenance = {"setup_label", "source_file"}
-    by_key: dict[str, dict[str, Any]] = {}
+        raise ValueError(f"No frames supplied for {table.name!r}")
+    keys = table.stable_key
+    if keys is None:  # guarded for the current producer declarations
+        raise ValueError(f"No stable key is defined for static table {table.name!r}")
+    if any(key not in frame.columns for frame in materialized for key in keys):
+        if not all(
+            _schema(materialized[0]) == _schema(frame)
+            and sorted(_token(record) for record in _records(materialized[0]))
+            == sorted(_token(record) for record in _records(frame))
+            for frame in materialized[1:]
+        ):
+            raise ValueError(f"Static rows for {table.name!r} differ between inputs")
+        return materialized[0].copy()
+
+    required = set(table.required_columns) | set(keys)
     for frame in materialized:
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise ValueError(
+                f"Table {table.name!r} is missing required columns {missing}"
+            )
+    shared = set.intersection(*(set(frame.columns) for frame in materialized))
+    incompatible = sorted(
+        column
+        for column in shared
+        if len({str(frame[column].dtype) for frame in materialized}) != 1
+    )
+    if incompatible:
+        raise ValueError(
+            f"Incompatible schemas for shared table {table.name!r}: {incompatible}"
+        )
+
+    declared = [column.name for column in table.columns]
+    extensions = [
+        column
+        for frame in materialized
+        for column in frame.columns
+        if column not in declared
+    ]
+    output_columns = list(
+        dict.fromkeys(
+            [
+                column
+                for column in declared
+                if any(column in frame for frame in materialized)
+            ]
+            + extensions
+        )
+    )
+
+    records_by_frame: list[dict[str, dict[str, Any]]] = []
+    for frame in materialized:
+        records: dict[str, dict[str, Any]] = {}
         for record in _records(frame):
             key = _token([record[column] for column in keys])
-            comparable = {
-                name: value for name, value in record.items() if name not in provenance
-            }
-            previous = by_key.get(key)
-            if previous is not None:
-                old_comparable = {
-                    name: value
-                    for name, value in previous.items()
-                    if name not in provenance
-                }
-                if _token(old_comparable) != _token(comparable):
+            if key in records:
+                raise ValueError(f"Duplicate static rows for {table.name!r} key {key}")
+            records[key] = record
+        records_by_frame.append(records)
+    expected_keys = set(records_by_frame[0])
+    if any(set(records) != expected_keys for records in records_by_frame[1:]):
+        raise ValueError(f"Static rows for {table.name!r} differ between inputs")
+
+    merged: list[dict[str, Any]] = []
+    for key in sorted(expected_keys):
+        result = {
+            column: records_by_frame[0][key].get(column) for column in output_columns
+        }
+        for records in records_by_frame[1:]:
+            record = records[key]
+            for column in output_columns:
+                old = result.get(column)
+                new = record.get(column)
+                if _is_missing(old):
+                    result[column] = new
+                elif not _is_missing(new) and _token(old) != _token(new):
                     raise ValueError(
-                        f"Conflicting records for 'setup/normalized' key {key}"
+                        f"Conflicting static rows for {table.name!r} key {key}"
                     )
-                if _token(record) >= _token(previous):
-                    continue
-            by_key[key] = record
-    return pd.DataFrame(
-        [by_key[key] for key in sorted(by_key)], columns=materialized[0].columns
-    )
+        merged.append(result)
+    return pd.DataFrame(merged, columns=output_columns)
+
+
+def _regenerate_table(
+    table: TableSpec, merged_tables: Mapping[str, pd.DataFrame]
+) -> pd.DataFrame:
+    """Regenerate one declared derived table from its declared prerequisites."""
+    prerequisites = tuple(merged_tables[name] for name in table.rebuild_from)
+    if table.name == "setup/diffs":
+        return build_setup_diffs(prerequisites[0])
+    if table.name == "summaries/segment_statistics":
+        return build_segment_statistics(prerequisites[0], prerequisites[1])
+    raise ValueError(f"No rebuild implementation for {table.name!r}")
 
 
 def _ordered_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -248,10 +301,10 @@ def _ordered_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _validate_table_names(manifest: Mapping[str, Any], root: Path) -> None:
-    names = set(manifest["tables"])
-    unknown = sorted(names - _REQUIRED_TABLES - _OPTIONAL_TABLES)
-    if unknown:
-        raise ValueError(f"Dataset {root} contains unsupported merge tables: {unknown}")
+    try:
+        DATASET_CONTRACT.merge_plan(manifest["tables"])
+    except ValueError as exc:
+        raise ValueError(f"Dataset {root} contains {exc}") from exc
 
 
 def _load_inputs(
@@ -466,45 +519,47 @@ def merge_datasets(
     definitions = _load_segment_definitions(input_roots)
     raw = _raw_registry(input_roots)
 
-    all_table_names = sorted(grouped_tables)
+    plan = DATASET_CONTRACT.merge_plan(grouped_tables)
     static_names = [
-        name for name in all_table_names if name.startswith(_STATIC_TABLE_PREFIX)
+        table.name for table in plan if table.merge_mode is MergeMode.STATIC_EQUAL
     ]
     expected_static = set(static_names)
     for manifest in manifests:
+        manifest_plan = DATASET_CONTRACT.merge_plan(manifest["tables"])
         if {
-            name for name in manifest["tables"] if name.startswith(_STATIC_TABLE_PREFIX)
+            table.name
+            for table in manifest_plan
+            if table.merge_mode is MergeMode.STATIC_EQUAL
         } != expected_static:
             raise ValueError(
                 "All input datasets must contain the same static track tables"
             )
 
     merged_tables: dict[str, pd.DataFrame] = {}
-    for logical_name in all_table_names:
-        if logical_name in _GENERATED_TABLES:
+    for table in plan:
+        logical_name = table.name
+        if table.merge_mode is MergeMode.REBUILD:
             continue
         frames = grouped_tables[logical_name]
-        if logical_name.startswith(_STATIC_TABLE_PREFIX):
-            if len(frames) != len(manifests) or not all(
-                _same_frame(frames[0], frame) for frame in frames[1:]
-            ):
+        if table.merge_mode is MergeMode.STATIC_EQUAL:
+            try:
+                merged_tables[logical_name] = _ordered_frame(
+                    _merge_static_equal(table, frames)
+                )
+            except ValueError as exc:
                 raise ValueError(
                     f"Static track table {logical_name!r} differs between inputs"
-                )
-            merged_tables[logical_name] = _ordered_frame(frames[0])
-        elif logical_name == "setup/normalized":
-            merged_tables[logical_name] = _merge_normalized_setups(frames)
+                ) from exc
         else:
-            merged_tables[logical_name] = _merge_keyed(logical_name, frames)
+            merged_tables[logical_name] = _merge_keyed(table, frames)
 
-    setups = merged_tables.get("setup/normalized", pd.DataFrame())
-    if not setups.empty:
-        setup_diffs = build_setup_diffs(setups)
-        if not setup_diffs.empty:
-            merged_tables["setup/diffs"] = setup_diffs
-    passes = merged_tables.get("segments/passes", pd.DataFrame())
-    statistics = build_segment_statistics(passes, merged_tables["sessions"])
-    merged_tables["summaries/segment_statistics"] = statistics
+    for table in plan:
+        if table.merge_mode is not MergeMode.REBUILD:
+            continue
+        rebuilt = _regenerate_table(table, merged_tables)
+        if not (table.omit_if_empty and rebuilt.empty):
+            merged_tables[table.name] = rebuilt
+    statistics = merged_tables.get("summaries/segment_statistics", pd.DataFrame())
     quality = merged_tables.get("quality/flags", pd.DataFrame())
     ai_context = build_ai_context(
         merged_tables["sessions"], merged_tables["laps"], statistics, quality

@@ -1,7 +1,9 @@
 import importlib.util
 from pathlib import Path
 
+from ac_telemetry.dataset_contract import DATASET_CONTRACT
 from ac_telemetry.pipeline import preprocess_dataset
+from ac_telemetry.storage import DatasetStorage
 from ac_telemetry.util import json_load
 from ac_telemetry.validation import validate_dataset
 from track_fixture import make_track
@@ -60,3 +62,19 @@ def test_pipeline_writes_normalized_event_tables(tmp_path: Path) -> None:
 
     validation = validate_dataset(tmp_path / "dataset")
     assert validation["status"] == "ok", validation
+
+    storage = DatasetStorage(tmp_path / "dataset")
+    for logical_name, info in tables.items():
+        table = DATASET_CONTRACT.table(logical_name)
+        assert table is not None
+        frame = storage.read(info["path"])
+        assert list(frame.columns) == [column.name for column in table.columns] or (
+            frame.empty
+            and (
+                (
+                    table.empty_frame_columns is not None
+                    and list(frame.columns) == list(table.empty_frame_columns)
+                )
+                or (table.allows_untyped_empty_frame and len(frame.columns) == 0)
+            )
+        )

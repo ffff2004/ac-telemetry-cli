@@ -11,11 +11,11 @@ from typing import Any, Literal, cast
 import numpy as np
 import pandas as pd
 
+from .dataset_contract import DATASET_CONTRACT
 from .manifest import DATASET_SCHEMA_VERSION
 from .storage import DatasetStorage
 from .util import json_load
 
-REQUIRED_LOGICAL_TABLES = {"sessions", "laps", "samples", "track/reference"}
 REQUIRED_SAMPLE_COLUMNS = {
     "track_s_m",
     "track_progress",
@@ -24,57 +24,15 @@ REQUIRED_SAMPLE_COLUMNS = {
     "path_distance_2d_m",
     "path_distance_3d_m",
 }
-STABLE_KEY_COLUMNS: dict[str, tuple[str, ...]] = {
-    "sessions": ("session_id",),
-    "laps": ("lap_id",),
-    "samples": ("session_id", "lap_id", "sample_index"),
-    "quality/flags": ("session_id", "lap_id", "code", "sample_start", "sample_end"),
-    "setup/normalized": ("setup_id", "section", "parameter"),
-    "segments/passes": ("session_id", "lap_id", "segment_id"),
-    "events/relations": ("relation_id",),
-}
-_SETUP_NORMALIZED_COLUMNS = {
-    "setup_id",
-    "source_hash",
-    "section",
-    "parameter",
-    "value_numeric",
-    "value_text",
-    "category",
-}
-REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
-    "sessions": frozenset({"session_id", "setup_id"}),
-    "laps": frozenset(
-        {
-            "session_id",
-            "lap_id",
-            "is_complete",
-            "is_valid",
-            "lap_time_s",
-            "source_lap_number",
-        }
-    ),
-    "samples": frozenset({"session_id", "lap_id", "sample_index"}),
-    "setup/normalized": frozenset(_SETUP_NORMALIZED_COLUMNS),
-    "segments/passes": frozenset(
-        {
-            "session_id",
-            "lap_id",
-            "segment_id",
-            "segment_name",
-            "valid_for_comparison",
-            "segment_time_s",
-            "entry_speed_kmh",
-            "minimum_speed_kmh",
-            "exit_speed_kmh",
-            "brake_onset_track_s_m",
-            "full_throttle_commit_track_s_m",
-            "coasting_time_s",
-        }
-    ),
-    "events/index": frozenset({"event_id"}),
-    "events/relations": frozenset({"relation_id", "event_id_a", "event_id_b"}),
-}
+
+
+def _setup_normalized_columns() -> set[str]:
+    table = DATASET_CONTRACT.table("setup/normalized")
+    if table is None:  # DatasetContract definition validation prevents this.
+        raise AssertionError("setup/normalized is missing from the dataset contract")
+    return set(table.required_columns)
+
+
 _INTEGRITY_CHECKS = {
     "required_tables",
     "required_columns",
@@ -215,23 +173,14 @@ def _token(value: Any) -> str:
 def _stable_key_columns(
     logical_name: str, frame: pd.DataFrame
 ) -> tuple[str, ...] | None:
-    if logical_name in STABLE_KEY_COLUMNS:
-        return STABLE_KEY_COLUMNS[logical_name]
-    if (
-        logical_name.startswith("events/")
-        and logical_name != "events/relations"
-        and "event_id" in frame.columns
-    ):
-        return ("event_id",)
-    return None
+    del frame
+    table = DATASET_CONTRACT.table(logical_name)
+    return table.stable_key if table is not None else None
 
 
 def _logical_record(logical_name: str, record: Mapping[str, Any]) -> dict[str, Any]:
-    ignored = (
-        {"source_file", "source_name", "setup_label"}
-        if logical_name in {"sessions", "setup/normalized"}
-        else set()
-    )
+    table = DATASET_CONTRACT.table(logical_name)
+    ignored = table.ignored_identity_columns if table is not None else frozenset()
     return {name: value for name, value in record.items() if name not in ignored}
 
 
@@ -328,7 +277,7 @@ def _normalized_setup_value(record: Mapping[str, Any]) -> Any:
 def _normalized_setup_values(
     issues: list[ValidationIssue], frame: pd.DataFrame, setup_id: str
 ) -> dict[tuple[str, str], Any] | None:
-    if not _has_columns(issues, "setup/normalized", frame, _SETUP_NORMALIZED_COLUMNS):
+    if not _has_columns(issues, "setup/normalized", frame, _setup_normalized_columns()):
         return None
     values: dict[tuple[str, str], Any] = {}
     rows = frame[frame["setup_id"].astype(str) == setup_id]
@@ -493,7 +442,7 @@ def _check_setup_consistency(
         normalized is not None
         and (not normalized.empty or len(normalized.columns))
         and _has_columns(
-            issues, "setup/normalized", normalized, _SETUP_NORMALIZED_COLUMNS
+            issues, "setup/normalized", normalized, _setup_normalized_columns()
         )
     ):
         _check_identity_columns(
@@ -594,59 +543,72 @@ def _string_values(frame: pd.DataFrame, column: str) -> set[str]:
 def _check_foreign_keys(
     issues: list[ValidationIssue], tables: Mapping[str, pd.DataFrame]
 ) -> None:
+    def values(frame: pd.DataFrame, columns: tuple[str, ...]) -> set[tuple[str, ...]]:
+        complete = frame.dropna(subset=list(columns))
+        return {
+            tuple(str(value) for value in row)
+            for row in complete.loc[:, list(columns)].itertuples(index=False, name=None)
+        }
+
+    for logical_name, frame in tables.items():
+        table = DATASET_CONTRACT.table(logical_name)
+        if table is None:
+            continue
+        for foreign_key in table.foreign_keys:
+            if not set(foreign_key.source_columns) <= set(frame.columns):
+                continue
+            target = tables.get(foreign_key.target_table)
+            if target is None:
+                if foreign_key.target_table == "events/index":
+                    _issue(
+                        issues,
+                        ValidationCode.MISSING_EVENT_INDEX,
+                        "Event fact tables require events/index",
+                        "foreign_keys",
+                    )
+                    return
+                continue
+            if not set(foreign_key.target_columns) <= set(target.columns):
+                continue
+            if values(frame, foreign_key.source_columns) <= values(
+                target, foreign_key.target_columns
+            ):
+                continue
+            if foreign_key.target_table == "events/index":
+                code = (
+                    ValidationCode.UNKNOWN_EVENT_RELATION_REFERENCE
+                    if logical_name == "events/relations"
+                    else ValidationCode.UNKNOWN_EVENT_REFERENCE
+                )
+                message = (
+                    "Event relations reference an unknown event_id"
+                    if code is ValidationCode.UNKNOWN_EVENT_RELATION_REFERENCE
+                    else f"Table {logical_name!r} references an unknown event_id"
+                )
+            elif foreign_key.source_columns == ("session_id",):
+                code = ValidationCode.UNKNOWN_SESSION_REFERENCE
+                message = f"Table {logical_name!r} references an unknown session_id"
+            elif foreign_key.source_columns == ("lap_id",):
+                code = ValidationCode.UNKNOWN_LAP_REFERENCE
+                message = f"Table {logical_name!r} references an unknown lap_id"
+            else:
+                code = ValidationCode.UNKNOWN_SESSION_LAP_REFERENCE
+                message = (
+                    f"Table {logical_name!r} references an unknown session/lap pair"
+                )
+            _issue(issues, code, message, "foreign_keys")
+
     sessions = tables.get("sessions")
     laps = tables.get("laps")
     samples = tables.get("samples")
     if sessions is None or laps is None or samples is None:
         return
-    if not _has_columns(issues, "sessions", sessions, {"session_id"}):
-        return
-    if not _has_columns(issues, "laps", laps, {"session_id", "lap_id"}):
-        return
-    if not _has_columns(issues, "samples", samples, {"session_id", "lap_id"}):
+    if not {"session_id"} <= set(sessions.columns) or not {
+        "session_id",
+        "lap_id",
+    } <= set(laps.columns):
         return
     session_ids = _string_values(sessions, "session_id")
-    lap_ids = _string_values(laps, "lap_id")
-    lap_pairs = set(
-        zip(
-            laps["session_id"].dropna().astype(str),
-            laps["lap_id"].dropna().astype(str),
-            strict=True,
-        )
-    )
-    for logical_name, frame in tables.items():
-        if (
-            "session_id" in frame
-            and not _string_values(frame, "session_id") <= session_ids
-        ):
-            _issue(
-                issues,
-                ValidationCode.UNKNOWN_SESSION_REFERENCE,
-                f"Table {logical_name!r} references an unknown session_id",
-                "foreign_keys",
-            )
-        if "lap_id" in frame and not _string_values(frame, "lap_id") <= lap_ids:
-            _issue(
-                issues,
-                ValidationCode.UNKNOWN_LAP_REFERENCE,
-                f"Table {logical_name!r} references an unknown lap_id",
-                "foreign_keys",
-            )
-        if {"session_id", "lap_id"} <= set(frame.columns):
-            pairs = set(
-                zip(
-                    frame["session_id"].dropna().astype(str),
-                    frame["lap_id"].dropna().astype(str),
-                    strict=True,
-                )
-            )
-            if not pairs <= lap_pairs:
-                _issue(
-                    issues,
-                    ValidationCode.UNKNOWN_SESSION_LAP_REFERENCE,
-                    f"Table {logical_name!r} references an unknown session/lap pair",
-                    "foreign_keys",
-                )
     sessions_with_laps = _string_values(laps, "session_id")
     if not session_ids <= sessions_with_laps:
         _issue(
@@ -655,13 +617,10 @@ def _check_foreign_keys(
             "Sessions without laps are not valid datasets",
             "foreign_keys",
         )
-    sample_pairs = set(
-        zip(
-            samples["session_id"].dropna().astype(str),
-            samples["lap_id"].dropna().astype(str),
-            strict=True,
-        )
-    )
+    if not {"session_id", "lap_id"} <= set(samples.columns):
+        return
+    lap_pairs = values(laps, ("session_id", "lap_id"))
+    sample_pairs = values(samples, ("session_id", "lap_id"))
     if not lap_pairs <= sample_pairs:
         _issue(
             issues,
@@ -669,48 +628,6 @@ def _check_foreign_keys(
             "Laps without samples are not valid datasets",
             "foreign_keys",
         )
-    event_tables = [name for name in tables if name.startswith("events/")]
-    event_index = tables.get("events/index")
-    if event_tables and event_index is None:
-        _issue(
-            issues,
-            ValidationCode.MISSING_EVENT_INDEX,
-            "Event fact tables require events/index",
-            "foreign_keys",
-        )
-        return
-    if event_index is None or not _has_columns(
-        issues, "events/index", event_index, {"event_id"}
-    ):
-        return
-    event_ids = _string_values(event_index, "event_id")
-    for logical_name, frame in tables.items():
-        if logical_name == "events/index":
-            continue
-        for column in (
-            "event_id",
-            "parent_braking_event_id",
-            "parent_throttle_event_id",
-        ):
-            if column in frame and not _string_values(frame, column) <= event_ids:
-                _issue(
-                    issues,
-                    ValidationCode.UNKNOWN_EVENT_REFERENCE,
-                    f"Table {logical_name!r} references an unknown event_id",
-                    "foreign_keys",
-                )
-    relations = tables.get("events/relations")
-    if relations is not None and _has_columns(
-        issues, "events/relations", relations, {"event_id_a", "event_id_b"}
-    ):
-        for column in ("event_id_a", "event_id_b"):
-            if not _string_values(relations, column) <= event_ids:
-                _issue(
-                    issues,
-                    ValidationCode.UNKNOWN_EVENT_RELATION_REFERENCE,
-                    "Event relations reference an unknown event_id",
-                    "foreign_keys",
-                )
 
 
 def segment_definition_issues(definitions: Any) -> list[str]:
@@ -808,8 +725,11 @@ def dataset_integrity_issues(
     declared_tables = (
         set(table_manifest) if isinstance(table_manifest, Mapping) else set()
     )
-    missing = sorted(REQUIRED_LOGICAL_TABLES - declared_tables)
-    unavailable = sorted(REQUIRED_LOGICAL_TABLES - set(tables))
+    required_tables = {
+        table.name for table in DATASET_CONTRACT.tables if table.required_in_dataset
+    }
+    missing = sorted(required_tables - declared_tables)
+    unavailable = sorted(required_tables - set(tables))
     if missing:
         _issue(
             issues,
@@ -825,18 +745,20 @@ def dataset_integrity_issues(
             "required_tables",
         )
     for logical_name, frame in tables.items():
-        columns = REQUIRED_COLUMNS.get(logical_name)
-        if logical_name.startswith("events/") and logical_name not in {
-            "events/index",
-            "events/relations",
-        }:
-            columns = {"event_id"}
-        is_core_table = logical_name in REQUIRED_LOGICAL_TABLES
+        table = DATASET_CONTRACT.table(logical_name)
+        if table is None:
+            continue
+        columns = set(table.required_columns)
+        is_core_table = table.required_in_dataset
         has_schema = not frame.empty or bool(len(frame.columns))
-        if columns is not None and (is_core_table or has_schema):
+        if columns and (is_core_table or has_schema):
             _has_columns(issues, logical_name, frame, columns)
         keys = _stable_key_columns(logical_name, frame)
-        if keys is not None and (is_core_table or has_schema):
+        if (
+            keys is not None
+            and table.merge_mode.value == "keyed"
+            and (is_core_table or has_schema)
+        ):
             _check_identity_columns(issues, logical_name, frame, keys)
             _check_stable_key_conflicts(issues, logical_name, frame)
     raw = _check_raw_registry(issues, raw_registry)
