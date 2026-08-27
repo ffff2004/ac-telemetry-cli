@@ -13,7 +13,7 @@ from .replay import inspect_replay
 from .segments import generate_segments_from_sections_ini
 from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, json_load
-from .validation import validate_dataset
+from .validation import require_valid_dataset, validate_dataset
 
 
 def _print_json(value: Any) -> None:
@@ -142,6 +142,7 @@ def command_validate(args: argparse.Namespace) -> int:
 
 def command_summarize(args: argparse.Namespace) -> int:
     root = Path(args.dataset).resolve()
+    require_valid_dataset(root)
     sessions = load_dataset_table(root, "sessions")
     laps = load_dataset_table(root, "laps")
     passes = load_dataset_table(root, "segments/passes")

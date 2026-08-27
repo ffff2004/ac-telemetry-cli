@@ -167,6 +167,14 @@ def _write_dataset(
     )
 
 
+def _replace_table(root: Path, logical_name: str, frame: pd.DataFrame) -> None:
+    storage = DatasetStorage(root)
+    reference = storage.write(logical_name, frame)
+    manifest = json_load(root / "manifest.json")
+    manifest["tables"][logical_name] = table_manifest([reference])[logical_name]
+    json_dump(root / "manifest.json", manifest)
+
+
 def _append_setup(
     root: Path,
     *,
@@ -203,6 +211,97 @@ def _append_setup(
         "raw": {"GEARS": {"FINAL": raw_value}},
     }
     json_dump(root / "setup" / "raw.json", raw)
+
+
+@pytest.mark.parametrize(
+    ("logical_name", "column"),
+    [
+        ("sessions", "setup_id"),
+        ("laps", "is_complete"),
+        ("laps", "is_valid"),
+        ("laps", "lap_time_s"),
+        ("laps", "source_lap_number"),
+        ("setup/normalized", "category"),
+        ("segments/passes", "segment_name"),
+        ("segments/passes", "valid_for_comparison"),
+        ("segments/passes", "segment_time_s"),
+        ("segments/passes", "entry_speed_kmh"),
+        ("segments/passes", "minimum_speed_kmh"),
+        ("segments/passes", "exit_speed_kmh"),
+        ("segments/passes", "brake_onset_track_s_m"),
+        ("segments/passes", "full_throttle_commit_track_s_m"),
+        ("segments/passes", "coasting_time_s"),
+    ],
+)
+def test_validate_dataset_rejects_missing_summary_consumer_columns(
+    tmp_path: Path, logical_name: str, column: str
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    frame = (
+        DatasetStorage(source).read(f"{logical_name}.parquet").drop(columns=[column])
+    )
+    _replace_table(source, logical_name, frame)
+
+    report = validate_dataset(source)
+
+    assert report["status"] == "error"
+    assert any(
+        issue["code"] == ValidationCode.MISSING_REQUIRED_COLUMNS.value
+        and logical_name in issue["message"]
+        and column in issue["message"]
+        for issue in report["warnings"]
+    )
+
+
+def test_validate_dataset_accepts_empty_zero_column_passes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    _replace_table(source, "segments/passes", pd.DataFrame())
+
+    report = validate_dataset(source)
+
+    assert report["status"] == "ok", report
+
+
+def test_merge_accepts_empty_zero_column_passes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    _replace_table(source, "segments/passes", pd.DataFrame())
+
+    output = tmp_path / "output"
+    merge_datasets([source], output)
+
+    passes = DatasetStorage(output).read("segments/passes.parquet")
+    assert passes.empty
+    assert len(passes.columns) == 0
+
+
+def test_merge_rejects_missing_setup_normalized_category_before_output_creation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    normalized = (
+        DatasetStorage(source)
+        .read("setup/normalized.parquet")
+        .drop(columns=["category"])
+    )
+    _replace_table(source, "setup/normalized", normalized)
+
+    output = tmp_path / "output"
+    with pytest.raises(ValueError, match="setup/normalized.*category"):
+        merge_datasets([source], output)
+
+    assert not output.exists()
 
 
 def test_merge_public_interface_is_deterministic_and_preserves_sidecars(

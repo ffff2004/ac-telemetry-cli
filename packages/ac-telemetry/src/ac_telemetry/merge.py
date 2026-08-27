@@ -28,8 +28,7 @@ from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, json_load, stable_id
 from .validation import (
     STABLE_KEY_COLUMNS,
-    ValidationCode,
-    dataset_integrity_issues,
+    require_valid_dataset,
     validate_dataset,
 )
 
@@ -61,18 +60,6 @@ _DISPLAY_COLUMNS = {"source_file", "source_name", "setup_label"}
 _TRACK_DISPLAY_FIELDS = {"track_dir", "reference_source", "pit_reference_source"}
 
 _KEY_COLUMNS = STABLE_KEY_COLUMNS
-_MISSING_TABLE_CODES = frozenset(
-    {ValidationCode.MISSING_TABLES, ValidationCode.UNAVAILABLE_CORE_TABLES}
-)
-
-
-def _validation_code(value: Any) -> ValidationCode | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return ValidationCode(value)
-    except ValueError:
-        return None
 
 
 def _canonical(value: Any) -> Any:
@@ -173,6 +160,14 @@ def _merge_keyed(logical_name: str, frames: Iterable[pd.DataFrame]) -> pd.DataFr
     materialized = list(frames)
     if not materialized:
         raise ValueError(f"No frames supplied for {logical_name!r}")
+    if logical_name == "segments/passes":
+        materialized = [
+            frame
+            for frame in materialized
+            if not (frame.empty and len(frame.columns) == 0)
+        ]
+        if not materialized:
+            return pd.DataFrame()
     schema = _schema(materialized[0])
     if any(_schema(frame) != schema for frame in materialized[1:]):
         raise ValueError(f"Incompatible schemas for shared table {logical_name!r}")
@@ -270,47 +265,17 @@ def _load_inputs(
         manifest_path = root / "manifest.json"
         if not root.is_dir() or not manifest_path.is_file():
             raise FileNotFoundError(f"Dataset manifest not found: {manifest_path}")
+        require_valid_dataset(root)
         manifest = json_load(manifest_path)
         if not isinstance(manifest, dict) or not isinstance(
             manifest.get("tables"), dict
         ):
             raise ValueError(f"Invalid dataset manifest: {manifest_path}")
-        report = validate_dataset(root)
-        if report["status"] == "error":
-            warnings = report.get("warnings")
-            warning = warnings[0] if isinstance(warnings, list) and warnings else {}
-            if not isinstance(warning, Mapping):
-                warning = {}
-            code = _validation_code(warning.get("code"))
-            message = str(warning.get("message", "Validation failed"))
-            if code in _MISSING_TABLE_CODES:
-                raise ValueError(
-                    f"Dataset {root} is missing required tables: {message}"
-                )
-            if code is ValidationCode.MISSING_REQUIRED_COLUMNS:
-                raise ValueError(
-                    f"Dataset {root} is missing required columns: {message}"
-                )
-            code_label = (
-                code.value.replace("_", " ").lower()
-                if code is not None
-                else "validation"
-            )
-            raise ValueError(
-                f"Dataset {root} failed validation ({code_label}): {message}"
-            )
         _validate_table_names(manifest, root)
         input_tables = {
             logical_name: load_dataset_table(root, logical_name)
             for logical_name in manifest["tables"]
         }
-        raw_path = root / "setup" / "raw.json"
-        raw = json_load(raw_path) if raw_path.exists() else None
-        definitions_path = root / "segments" / "definitions.json"
-        definitions = json_load(definitions_path) if definitions_path.exists() else None
-        issues = dataset_integrity_issues(manifest, input_tables, raw, definitions)
-        if issues:
-            raise ValueError(f"Dataset {root} failed validation: {issues[0].message}")
         manifests.append(manifest)
         for logical_name, frame in input_tables.items():
             tables.setdefault(logical_name, []).append(frame)

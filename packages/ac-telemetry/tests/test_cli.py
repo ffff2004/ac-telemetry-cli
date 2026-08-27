@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from ac_telemetry.cli import main
+from ac_telemetry.manifest import DATASET_SCHEMA_VERSION, table_manifest
 from ac_telemetry.storage import DatasetStorage
 from ac_telemetry.util import json_dump
 
@@ -99,6 +100,78 @@ def test_export_csv_writes_csv_from_parquet_dataset(tmp_path: Path) -> None:
     )
 
     pd.testing.assert_frame_equal(pd.read_csv(output), table)
+
+
+def test_summarize_validates_before_loading_or_rewriting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dataset = tmp_path / "dataset"
+    storage = DatasetStorage(dataset)
+    refs = [
+        storage.write(
+            "sessions",
+            pd.DataFrame([{"session_id": "session", "setup_id": None}]),
+        ),
+        storage.write(
+            "laps",
+            pd.DataFrame(
+                [
+                    {
+                        "session_id": "session",
+                        "lap_id": "lap",
+                        "is_complete": True,
+                        "lap_time_s": 60.0,
+                        "source_lap_number": 1,
+                    }
+                ]
+            ),
+        ),
+        storage.write(
+            "samples",
+            pd.DataFrame(
+                [
+                    {
+                        "session_id": "session",
+                        "lap_id": "lap",
+                        "sample_index": 0,
+                        "track_s_m": 0.0,
+                        "track_progress": 0.0,
+                        "track_projection_distance_3d_m": 0.0,
+                        "lateral_offset_m": 0.0,
+                        "path_distance_2d_m": 0.0,
+                        "path_distance_3d_m": 0.0,
+                    }
+                ]
+            ),
+        ),
+        storage.write("track/reference", pd.DataFrame({"point": [1]})),
+        storage.write("segments/passes", pd.DataFrame()),
+    ]
+    json_dump(
+        dataset / "manifest.json",
+        {
+            "schema_version": DATASET_SCHEMA_VERSION,
+            "track_reference_id": "track",
+            "source_files": [{"sha256": "source", "type": "replay"}],
+            "tables": table_manifest(refs),
+        },
+    )
+    context = dataset / "summaries" / "ai_context.json"
+    json_dump(context, {"sentinel": True})
+    loaded: list[str] = []
+
+    def fail_if_loaded(root: Path, logical_name: str) -> pd.DataFrame:
+        loaded.append(logical_name)
+        raise AssertionError(f"loaded {logical_name}")
+
+    monkeypatch.setattr("ac_telemetry.cli.load_dataset_table", fail_if_loaded)
+
+    assert main(["summarize", str(dataset)]) == 2
+    assert loaded == []
+    assert json.loads(context.read_text(encoding="utf-8")) == {"sentinel": True}
+    assert "missing required columns" in capsys.readouterr().err
 
 
 def test_preprocess_no_longer_accepts_setup_sp(

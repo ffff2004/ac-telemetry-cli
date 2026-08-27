@@ -40,6 +40,40 @@ _SETUP_NORMALIZED_COLUMNS = {
     "parameter",
     "value_numeric",
     "value_text",
+    "category",
+}
+REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
+    "sessions": frozenset({"session_id", "setup_id"}),
+    "laps": frozenset(
+        {
+            "session_id",
+            "lap_id",
+            "is_complete",
+            "is_valid",
+            "lap_time_s",
+            "source_lap_number",
+        }
+    ),
+    "samples": frozenset({"session_id", "lap_id", "sample_index"}),
+    "setup/normalized": frozenset(_SETUP_NORMALIZED_COLUMNS),
+    "segments/passes": frozenset(
+        {
+            "session_id",
+            "lap_id",
+            "segment_id",
+            "segment_name",
+            "valid_for_comparison",
+            "segment_time_s",
+            "entry_speed_kmh",
+            "minimum_speed_kmh",
+            "exit_speed_kmh",
+            "brake_onset_track_s_m",
+            "full_throttle_commit_track_s_m",
+            "coasting_time_s",
+        }
+    ),
+    "events/index": frozenset({"event_id"}),
+    "events/relations": frozenset({"relation_id", "event_id_a", "event_id_b"}),
 }
 _INTEGRITY_CHECKS = {
     "required_tables",
@@ -790,17 +824,8 @@ def dataset_integrity_issues(
             f"Core tables could not be loaded: {unavailable}",
             "required_tables",
         )
-    required_columns = {
-        "sessions": {"session_id"},
-        "laps": {"session_id", "lap_id"},
-        "samples": {"session_id", "lap_id", "sample_index"},
-        "setup/normalized": _SETUP_NORMALIZED_COLUMNS,
-        "segments/passes": {"session_id", "lap_id", "segment_id"},
-        "events/index": {"event_id"},
-        "events/relations": {"relation_id", "event_id_a", "event_id_b"},
-    }
     for logical_name, frame in tables.items():
-        columns = required_columns.get(logical_name)
+        columns = REQUIRED_COLUMNS.get(logical_name)
         if logical_name.startswith("events/") and logical_name not in {
             "events/index",
             "events/relations",
@@ -1052,3 +1077,29 @@ def validate_dataset(root: Path) -> dict[str, Any]:
         else ("warning" if warnings else "ok")
     )
     return {"status": status, "checks": checks, "warnings": warnings}
+
+
+def require_valid_dataset(root: Path) -> dict[str, Any]:
+    """Validate a dataset and raise a user-facing error when it is invalid."""
+    report = validate_dataset(root)
+    if report["status"] != "error":
+        return report
+
+    warnings = report.get("warnings")
+    warning = warnings[0] if isinstance(warnings, list) and warnings else {}
+    if not isinstance(warning, Mapping):
+        warning = {}
+    code_value = warning.get("code")
+    try:
+        code = ValidationCode(code_value)
+    except ValueError, TypeError:
+        code = None
+    message = str(warning.get("message", "Validation failed"))
+    if code in {ValidationCode.MISSING_TABLES, ValidationCode.UNAVAILABLE_CORE_TABLES}:
+        raise ValueError(f"Dataset {root} is missing required tables: {message}")
+    if code is ValidationCode.MISSING_REQUIRED_COLUMNS:
+        raise ValueError(f"Dataset {root} is missing required columns: {message}")
+    code_label = (
+        code.value.replace("_", " ").lower() if code is not None else "validation"
+    )
+    raise ValueError(f"Dataset {root} failed validation ({code_label}): {message}")
