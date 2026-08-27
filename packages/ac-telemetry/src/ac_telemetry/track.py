@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.spatial import cKDTree
 
 from .config import ProcessingConfig
+from .sections import parse_sections_ini
 from .util import sha256_file
 
 _AI_POINT_DTYPE = np.dtype(
@@ -195,7 +196,25 @@ def _parse_ai_spline(path: Path) -> _Spline:
     )
 
 
-def _read_ini_ranges(path: Path, prefix: str) -> list[dict[str, Any]]:
+def _read_sections(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for section in parse_sections_ini(path.read_text(encoding="utf-8-sig")):
+        if section.out_progress is None:
+            raise ValueError(f"Section {section.section_id!r} has no OUT value")
+        rows.append(
+            {
+                "section_id": section.section_id,
+                "section_name": section.name,
+                "start_progress": section.in_progress,
+                "end_progress": section.out_progress,
+            }
+        )
+    return rows
+
+
+def _read_drs_zones(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     parser = configparser.ConfigParser(interpolation=None)
@@ -203,27 +222,17 @@ def _read_ini_ranges(path: Path, prefix: str) -> list[dict[str, Any]]:
     parser.read(path, encoding="utf-8-sig")
     rows: list[dict[str, Any]] = []
     for section in parser.sections():
-        if not section.startswith(prefix):
+        if not section.startswith("ZONE_"):
             continue
         values = parser[section]
-        if prefix == "SECTION_":
-            rows.append(
-                {
-                    "section_id": section,
-                    "section_name": values.get("TEXT", section),
-                    "start_progress": float(values["IN"]),
-                    "end_progress": float(values["OUT"]),
-                }
-            )
-        elif prefix == "ZONE_":
-            rows.append(
-                {
-                    "drs_zone_id": section,
-                    "detection_progress": float(values["DETECTION"]),
-                    "start_progress": float(values["START"]),
-                    "end_progress": float(values["END"]),
-                }
-            )
+        rows.append(
+            {
+                "drs_zone_id": section,
+                "detection_progress": float(values["DETECTION"]),
+                "start_progress": float(values["START"]),
+                "end_progress": float(values["END"]),
+            }
+        )
     return rows
 
 
@@ -521,8 +530,8 @@ class TrackModel:
             fast = fallback
         pit_path = root / "ai" / "pit_lane.ai"
         pit = _parse_ai_spline(pit_path) if pit_path.exists() else None
-        sections = tuple(_read_ini_ranges(root / "data" / "sections.ini", "SECTION_"))
-        drs = tuple(_read_ini_ranges(root / "data" / "drs_zones.ini", "ZONE_"))
+        sections = tuple(_read_sections(root / "data" / "sections.ini"))
+        drs = tuple(_read_drs_zones(root / "data" / "drs_zones.ini"))
         ui_path = root / "ui" / "ui_track.json"
         ui: dict[str, Any] = {}
         if ui_path.exists():

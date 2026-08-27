@@ -1,5 +1,3 @@
-import configparser
-import math
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .config import ProcessingConfig
+from .sections import parse_sections_ini
 from .util import contiguous_true_runs, json_load
 
 SUPPORTED_COORDINATES = {"track_s_m", "track_progress"}
@@ -23,63 +22,40 @@ def generate_segments_from_sections_ini(
     ``0.0`` and ``1.0`` boundaries. ``OUT`` is intentionally not used because
     the generated segments include each section's exit.
     """
-    parser = configparser.ConfigParser(interpolation=None, strict=False)
-    parser.optionxform = str
-    try:
-        parser.read_string(sections_text)
-    except configparser.Error as exc:
-        raise ValueError(f"Invalid sections.ini: {exc}") from exc
-
-    sections: list[dict[str, Any]] = []
-    for section_id in parser.sections():
-        if not section_id.startswith("SECTION_"):
-            continue
-        values = parser[section_id]
-        try:
-            start = float(values["IN"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"Section {section_id!r} has an invalid IN value") from exc
-        if not math.isfinite(start) or not 0.0 <= start <= 1.0:
-            raise ValueError(f"Section {section_id!r} IN must be between 0.0 and 1.0")
-        sections.append(
-            {
-                "id": section_id.lower(),
-                "name": values.get("TEXT", section_id) or section_id,
-                "start": start,
-            }
-        )
-
-    sections.sort(key=lambda item: item["start"])
+    sections = sorted(
+        parse_sections_ini(sections_text), key=lambda section: section.in_progress
+    )
     segments: list[dict[str, Any]] = []
-    if sections and sections[0]["start"] > 0.0:
+    if sections and sections[0].in_progress > 0.0:
         first = sections[0]
         segments.append(
             {
-                "id": f"start_to_{first['id']}",
-                "name": f"Start to {first['name']}",
+
+                "id": f"start_to_{first.section_id.lower()}",
+                "name": f"Start to {first.name}",
                 "start": 0.0,
-                "end": first["start"],
+                "end": first.in_progress,
             }
         )
 
     for index, current in enumerate(sections):
         following = sections[index + 1] if index + 1 < len(sections) else None
-        end = following["start"] if following is not None else 1.0
-        if end <= current["start"]:
+        end = following.in_progress if following is not None else 1.0
+        if end <= current.in_progress:
             continue
         segments.append(
             {
                 "id": (
-                    f"{current['id']}_to_{following['id']}"
+                    f"{current.section_id.lower()}_to_{following.section_id.lower()}"
                     if following is not None
-                    else f"{current['id']}_to_finish"
+                    else f"{current.section_id.lower()}_to_finish"
                 ),
                 "name": (
-                    f"{current['name']} + exit to {following['name']}"
+                    f"{current.name} + exit to {following.name}"
                     if following is not None
-                    else f"{current['name']} + exit to finish"
+                    else f"{current.name} + exit to finish"
                 ),
-                "start": current["start"],
+                "start": current.in_progress,
                 "end": end,
             }
         )
