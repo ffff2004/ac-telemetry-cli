@@ -480,13 +480,17 @@ def _publish(staging: Path, output: Path, overwrite: bool) -> None:
         pass
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
+
+
 def merge_datasets(
     roots: list[Path], output: Path, *, overwrite: bool = False
 ) -> dict[str, Any]:
     """Merge v7 datasets strictly and publish the completed result atomically."""
     input_roots = [root.expanduser().resolve() for root in roots]
     output = output.expanduser().resolve()
-    if output in input_roots:
+    if any(_paths_overlap(output, root) for root in input_roots):
         raise ValueError("Merge output cannot also be an input dataset")
 
     manifests, grouped_tables = _load_inputs(input_roots)

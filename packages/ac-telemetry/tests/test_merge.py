@@ -548,6 +548,38 @@ def test_merge_rejects_incompatible_inputs_without_replacing_output(
         merge_datasets([left], left, overwrite=True)
 
 
+def test_merge_rejects_overwrite_output_that_contains_an_input(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "container"
+    source = output / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    source_manifest = (source / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="cannot also be an input"):
+        merge_datasets([source], output, overwrite=True)
+
+    assert output.is_dir()
+    assert source.is_dir()
+    assert (source / "manifest.json").read_bytes() == source_manifest
+
+
+def test_merge_rejects_output_nested_inside_an_input(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_dataset(
+        source, session_id="one", setup_label="baseline", setup_source="/a.ini"
+    )
+    output = source / "nested-output"
+
+    with pytest.raises(ValueError, match="cannot also be an input"):
+        merge_datasets([source], output, overwrite=True)
+
+    assert source.is_dir()
+    assert not output.exists()
+
+
 def test_merge_rejects_schema_and_static_track_conflicts(tmp_path: Path) -> None:
     left = tmp_path / "left"
     old_schema = tmp_path / "old-schema"
