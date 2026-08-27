@@ -43,6 +43,29 @@ ac-telemetry preprocess \
 
 Relative paths inside the config are resolved relative to the config file.
 
+When `--segments` is omitted, `preprocess` automatically generates continuous
+segments from the selected track/layout's `data/sections.ini`. Each segment
+starts at one section's `IN` progress and ends at the next section's `IN`; the
+lap prefix and suffix use `0.0` and `1.0`. An explicitly supplied segments file
+still takes precedence. If the layout has no `sections.ini`, no segments are
+generated.
+
+To generate the same definitions explicitly, read `sections.ini` from a file
+or stdin:
+
+```bash
+ac-telemetry sections-to-segments \
+  /path/to/assettocorsa/content/tracks/spa/data/sections.ini \
+  --output examples/spa_segments_generated.json
+
+cat /path/to/sections.ini | ac-telemetry sections-to-segments - \
+  --track spa
+```
+
+Without `--output`, the generated JSON is written to stdout. `--track` is
+metadata for stdin input; for a conventional `.../<track>/<layout>/data/sections.ini`
+path, the track ID is inferred automatically.
+
 A multi-car replay is expanded into one session per car. Use
 `--driver-name` or `driver_name` in a session config to process only one car.
 

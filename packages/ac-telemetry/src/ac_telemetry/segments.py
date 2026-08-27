@@ -1,3 +1,5 @@
+import configparser
+import math
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,88 @@ from .util import contiguous_true_runs, json_load
 
 SUPPORTED_COORDINATES = {"track_s_m", "track_progress"}
 _LAP_START_SAMPLE_TOLERANCE_M = 50.0
+
+
+def generate_segments_from_sections_ini(
+    sections_text: str, *, track: str | None = None
+) -> dict[str, Any]:
+    """Generate continuous analysis segments from ``sections.ini`` text.
+
+    Each segment starts at one section's ``IN`` value and ends at the next
+    section's ``IN`` value. The lap prefix and suffix are represented by the
+    ``0.0`` and ``1.0`` boundaries. ``OUT`` is intentionally not used because
+    the generated segments include each section's exit.
+    """
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    try:
+        parser.read_string(sections_text)
+    except configparser.Error as exc:
+        raise ValueError(f"Invalid sections.ini: {exc}") from exc
+
+    sections: list[dict[str, Any]] = []
+    for section_id in parser.sections():
+        if not section_id.startswith("SECTION_"):
+            continue
+        values = parser[section_id]
+        try:
+            start = float(values["IN"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Section {section_id!r} has an invalid IN value") from exc
+        if not math.isfinite(start) or not 0.0 <= start <= 1.0:
+            raise ValueError(f"Section {section_id!r} IN must be between 0.0 and 1.0")
+        sections.append(
+            {
+                "id": section_id.lower(),
+                "name": values.get("TEXT", section_id) or section_id,
+                "start": start,
+            }
+        )
+
+    sections.sort(key=lambda item: item["start"])
+    segments: list[dict[str, Any]] = []
+    if sections and sections[0]["start"] > 0.0:
+        first = sections[0]
+        segments.append(
+            {
+                "id": f"start_to_{first['id']}",
+                "name": f"Start to {first['name']}",
+                "start": 0.0,
+                "end": first["start"],
+            }
+        )
+
+    for index, current in enumerate(sections):
+        following = sections[index + 1] if index + 1 < len(sections) else None
+        end = following["start"] if following is not None else 1.0
+        if end <= current["start"]:
+            continue
+        segments.append(
+            {
+                "id": (
+                    f"{current['id']}_to_{following['id']}"
+                    if following is not None
+                    else f"{current['id']}_to_finish"
+                ),
+                "name": (
+                    f"{current['name']} + exit to {following['name']}"
+                    if following is not None
+                    else f"{current['name']} + exit to finish"
+                ),
+                "start": current["start"],
+                "end": end,
+            }
+        )
+
+    definitions: dict[str, Any] = {
+        "coordinate": "track_progress",
+        "description": "Automatically generated from sections.ini IN boundaries (IN-to-next-IN) because no explicit segments file is supplied.",
+        "segments": segments,
+    }
+    if track is not None:
+        definitions["track"] = track
+    _validate_segment_definitions(definitions)
+    return definitions
 
 
 def load_segment_definitions(path: Path | None) -> dict[str, Any] | None:

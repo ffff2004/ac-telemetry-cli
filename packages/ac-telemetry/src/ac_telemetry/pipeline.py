@@ -9,7 +9,11 @@ from .config import ProcessingConfig
 from .events import VehicleProfile, Wheel, detect_events
 from .manifest import DATASET_SCHEMA_VERSION, table_manifest
 from .replay import load_replay
-from .segments import load_segment_definitions, segment_passes
+from .segments import (
+    generate_segments_from_sections_ini,
+    load_segment_definitions,
+    segment_passes,
+)
 from .setup_parser import build_setup_diffs, parse_setup_bundle
 from .storage import DatasetStorage, TableRef
 from .summary import build_ai_context, build_segment_statistics
@@ -61,7 +65,19 @@ def preprocess_dataset(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     storage = DatasetStorage(output_dir)
-    segment_definitions = load_segment_definitions(segment_path)
+    if segment_path is None:
+        sections_path = track_model.track_dir / "data" / "sections.ini"
+        if sections_path.exists():
+            segment_definitions = generate_segments_from_sections_ini(
+                sections_path.read_text(encoding="utf-8-sig")
+            )
+            segment_definition_source = str(sections_path)
+        else:
+            segment_definitions = None
+            segment_definition_source = None
+    else:
+        segment_definitions = load_segment_definitions(segment_path)
+        segment_definition_source = str(segment_path)
 
     all_sessions: list[dict[str, Any]] = []
     all_samples: list[pd.DataFrame] = []
@@ -289,7 +305,7 @@ def preprocess_dataset(
         "track": track_model.metadata,
         "track_reference_id": track_model.reference_id,
         "track_coordinate": "geometric arc length projected onto AC fast_lane.ai",
-        "segment_definition_source": str(segment_path) if segment_path else None,
+        "segment_definition_source": segment_definition_source,
         "tables": table_manifest(refs),
         "warnings": [
             "ABS activity events are spectral candidates; observed frequencies may be aliased by the replay sample rate",

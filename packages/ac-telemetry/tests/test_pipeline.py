@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 from ac_telemetry.pipeline import preprocess_dataset
+from ac_telemetry.util import json_load
 from ac_telemetry.validation import validate_dataset
 from track_fixture import make_track
 
@@ -27,11 +28,12 @@ def _make_replay() -> bytes:
 def test_pipeline_writes_normalized_event_tables(tmp_path: Path) -> None:
     replay_path = tmp_path / "fixture.acreplay"
     replay_path.write_bytes(_make_replay())
+    track_dir = make_track(tmp_path / "track")
 
     manifest = preprocess_dataset(
         [{"replay": replay_path}],
         tmp_path / "dataset",
-        track_dir=make_track(tmp_path / "track"),
+        track_dir=track_dir,
     )
 
     tables = manifest["tables"]
@@ -42,6 +44,19 @@ def test_pipeline_writes_normalized_event_tables(tmp_path: Path) -> None:
     assert "events/relations" in tables
     assert "events/lockups" not in tables
     assert "events/wheelspin" not in tables
+
+    definitions = json_load(tmp_path / "dataset" / "segments" / "definitions.json")
+    assert definitions["segments"] == [
+        {
+            "id": "section_0_to_finish",
+            "name": "Straight + exit to finish",
+            "start": 0.0,
+            "end": 1.0,
+        }
+    ]
+    assert manifest["segment_definition_source"] == str(
+        track_dir / "data" / "sections.ini"
+    )
 
     validation = validate_dataset(tmp_path / "dataset")
     assert validation["status"] == "ok", validation

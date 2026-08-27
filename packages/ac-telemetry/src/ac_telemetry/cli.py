@@ -10,6 +10,7 @@ from .config import ProcessingConfig
 from .merge import merge_datasets
 from .pipeline import load_dataset_table, preprocess_dataset
 from .replay import inspect_replay
+from .segments import generate_segments_from_sections_ini
 from .summary import build_ai_context, build_segment_statistics
 from .util import json_dump, json_load
 from .validation import validate_dataset
@@ -77,6 +78,36 @@ def _load_session_specs(
 def command_inspect(args: argparse.Namespace) -> int:
     results = [inspect_replay(Path(path).resolve()) for path in args.replays]
     _print_json(results[0] if len(results) == 1 else results)
+    return 0
+
+
+def _track_id_from_sections_path(path: Path) -> str | None:
+    if path.parent.name != "data":
+        return None
+    layout_dir = path.parent.parent
+    return (
+        layout_dir.name
+        if layout_dir.parent.name == "tracks"
+        else layout_dir.parent.name
+    )
+
+
+def command_sections_to_segments(args: argparse.Namespace) -> int:
+    if args.sections == "-":
+        sections_text = sys.stdin.read()
+        track = args.track
+    else:
+        sections_path = Path(args.sections).resolve()
+        sections_text = sections_path.read_text(encoding="utf-8-sig")
+        track = args.track or _track_id_from_sections_path(sections_path)
+
+    definitions = generate_segments_from_sections_ini(sections_text, track=track)
+    if args.output:
+        output = Path(args.output).resolve()
+        json_dump(output, definitions)
+        _print_json({"status": "ok", "output": str(output)})
+    else:
+        _print_json(definitions)
     return 0
 
 
@@ -153,6 +184,23 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_cmd = sub.add_parser("inspect", help="Inspect .acreplay metadata and cars")
     inspect_cmd.add_argument("replays", nargs="+")
     inspect_cmd.set_defaults(func=command_inspect)
+
+    sections_to_segments = sub.add_parser(
+        "sections-to-segments",
+        help="Generate continuous segments from sections.ini",
+    )
+    sections_to_segments.add_argument(
+        "sections",
+        nargs="?",
+        default="-",
+        help="Path to sections.ini, or -/omitted to read stdin",
+    )
+    sections_to_segments.add_argument(
+        "--track",
+        help="Track ID to include in the generated definitions",
+    )
+    sections_to_segments.add_argument("--output")
+    sections_to_segments.set_defaults(func=command_sections_to_segments)
 
     preprocess = sub.add_parser(
         "preprocess", help="Build a normalized analysis dataset"

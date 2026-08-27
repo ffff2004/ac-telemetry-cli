@@ -4,7 +4,54 @@ import numpy as np
 import pandas as pd
 import pytest
 from ac_telemetry.config import ProcessingConfig
-from ac_telemetry.segments import load_segment_definitions, segment_passes
+from ac_telemetry.segments import (
+    generate_segments_from_sections_ini,
+    load_segment_definitions,
+    segment_passes,
+)
+
+
+def test_generate_segments_from_sections_ini_uses_next_section_in() -> None:
+    definitions = generate_segments_from_sections_ini(
+        """
+[SECTION_0]
+IN=0.2
+OUT=0.3
+TEXT=First Corner
+
+[SECTION_1]
+IN=0.6
+OUT=0.7
+TEXT=Second Corner
+""",
+        track="test_track",
+    )
+
+    assert definitions == {
+        "track": "test_track",
+        "coordinate": "track_progress",
+        "description": "Automatically generated from sections.ini IN boundaries (IN-to-next-IN) because no explicit segments file is supplied.",
+        "segments": [
+            {
+                "id": "start_to_section_0",
+                "name": "Start to First Corner",
+                "start": 0.0,
+                "end": 0.2,
+            },
+            {
+                "id": "section_0_to_section_1",
+                "name": "First Corner + exit to Second Corner",
+                "start": 0.2,
+                "end": 0.6,
+            },
+            {
+                "id": "section_1_to_finish",
+                "name": "Second Corner + exit to finish",
+                "start": 0.6,
+                "end": 1.0,
+            },
+        ],
+    }
 
 
 def test_segment_boundaries_are_interpolated_on_fixed_track_coordinate() -> None:
