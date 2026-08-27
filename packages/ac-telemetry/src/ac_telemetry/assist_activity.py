@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .config import ProcessingConfig
+from .contract_types import ForeignKey, MergeMode, TableSpec, column_specs
 from .util import close_short_false_gaps, contiguous_true_runs, stable_id
 
 # ABS design evidence from the controlled brake test in
@@ -123,6 +124,45 @@ _TC_COLUMNS = [
     "confidence",
     "quality_flags",
 ]
+
+ACTIVITY_TABLE_SPECS = (
+    TableSpec(
+        "events/abs_activity",
+        column_specs(
+            _ABS_COLUMNS,
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("event_id",), "events/index", ("event_id",)),
+            ForeignKey(("parent_braking_event_id",), "events/index", ("event_id",)),
+            ForeignKey(("session_id",), "sessions", ("session_id",)),
+            ForeignKey(("lap_id",), "laps", ("lap_id",)),
+            ForeignKey(("session_id", "lap_id"), "laps", ("session_id", "lap_id")),
+        ),
+    ),
+    TableSpec(
+        "events/tc_activity",
+        column_specs(
+            _TC_COLUMNS,
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("event_id",), "events/index", ("event_id",)),
+            ForeignKey(("parent_throttle_event_id",), "events/index", ("event_id",)),
+            ForeignKey(("session_id",), "sessions", ("session_id",)),
+            ForeignKey(("lap_id",), "laps", ("lap_id",)),
+            ForeignKey(("session_id", "lap_id"), "laps", ("session_id", "lap_id")),
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)

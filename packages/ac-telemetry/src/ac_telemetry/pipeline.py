@@ -6,6 +6,7 @@ import pandas as pd
 
 from . import __version__
 from .config import ProcessingConfig
+from .dataset_contract import DATASET_CONTRACT
 from .events import VehicleProfile, Wheel, detect_events
 from .manifest import DATASET_SCHEMA_VERSION, table_manifest
 from .replay import load_replay
@@ -20,6 +21,32 @@ from .summary import build_ai_context, build_segment_statistics
 from .track import TrackModel
 from .util import json_dump, sha256_file, stable_id, utc_now_iso
 from .validation import validate_dataset
+
+
+def _write_produced_table(
+    storage: DatasetStorage, logical_name: str, frame: pd.DataFrame
+) -> TableRef:
+    """Write a producer result only when it matches its declared public layout."""
+    table = DATASET_CONTRACT.table(logical_name)
+    if table is None:
+        raise AssertionError(f"Producer emitted undeclared table {logical_name!r}")
+    expected = [column.name for column in table.columns]
+    empty_layout = table.empty_frame_columns
+    preserves_empty_layout = (
+        frame.empty
+        and empty_layout is not None
+        and list(frame.columns) == list(empty_layout)
+    )
+    allows_untyped_empty = (
+        table.allows_untyped_empty_frame and frame.empty and len(frame.columns) == 0
+    )
+    if list(frame.columns) != expected and not (
+        preserves_empty_layout or allows_untyped_empty
+    ):
+        raise AssertionError(
+            f"Producer output for {logical_name!r} does not match its declared columns"
+        )
+    return storage.write(logical_name, frame)
 
 
 def _activity_metrics_by_lap(
@@ -251,20 +278,24 @@ def preprocess_dataset(
     ai_context = build_ai_context(sessions, laps, segment_statistics, quality)
 
     refs: list[TableRef] = []
-    refs.append(storage.write("sessions", sessions))
-    refs.append(storage.write("laps", laps))
-    refs.append(storage.write("samples", samples))
-    refs.append(storage.write("quality/flags", quality))
+    refs.append(_write_produced_table(storage, "sessions", sessions))
+    refs.append(_write_produced_table(storage, "laps", laps))
+    refs.append(_write_produced_table(storage, "samples", samples))
+    refs.append(_write_produced_table(storage, "quality/flags", quality))
     for logical, table in track_model.tables().items():
-        refs.append(storage.write(logical, table))
+        refs.append(_write_produced_table(storage, logical, table))
     if not setups.empty:
-        refs.append(storage.write("setup/normalized", setups))
+        refs.append(_write_produced_table(storage, "setup/normalized", setups))
     if not setup_diffs.empty:
-        refs.append(storage.write("setup/diffs", setup_diffs))
+        refs.append(_write_produced_table(storage, "setup/diffs", setup_diffs))
     for logical, table in event_tables.items():
-        refs.append(storage.write(logical, table))
-    refs.append(storage.write("segments/passes", passes))
-    refs.append(storage.write("summaries/segment_statistics", segment_statistics))
+        refs.append(_write_produced_table(storage, logical, table))
+    refs.append(_write_produced_table(storage, "segments/passes", passes))
+    refs.append(
+        _write_produced_table(
+            storage, "summaries/segment_statistics", segment_statistics
+        )
+    )
 
     if segment_definitions is not None:
         json_dump(output_dir / "segments" / "definitions.json", segment_definitions)

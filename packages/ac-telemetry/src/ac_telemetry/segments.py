@@ -5,11 +5,103 @@ import numpy as np
 import pandas as pd
 
 from .config import ProcessingConfig
+from .contract_types import ForeignKey, MergeMode, TableSpec, column_specs
 from .sections import parse_sections_ini
 from .util import contiguous_true_runs, json_load
 
 SUPPORTED_COORDINATES = {"track_s_m", "track_progress"}
 _LAP_START_SAMPLE_TOLERANCE_M = 50.0
+
+_PASS_COLUMNS = (
+    "session_id",
+    "lap_id",
+    "source_lap_number",
+    "segment_id",
+    "segment_name",
+    "parent_segment_id",
+    "coordinate",
+    "segment_start_track_s_m",
+    "segment_end_track_s_m",
+    "sample_count",
+    "segment_time_s",
+    "entry_speed_kmh",
+    "exit_speed_kmh",
+    "minimum_speed_kmh",
+    "minimum_speed_track_s_m",
+    "brake_onset_track_s_m",
+    "brake_release_track_s_m",
+    "brake_duration_s",
+    "peak_brake",
+    "brake_impulse_proxy_s",
+    "throttle_pickup_track_s_m",
+    "full_throttle_commit_track_s_m",
+    "coasting_time_s",
+    "partial_throttle_time_s",
+    "rear_slip_integral",
+    "max_abs_steer",
+    "steering_reversal_count",
+    "actual_path_length_m",
+    "reference_arc_length_m",
+    "path_excess_m",
+    "entry_lateral_offset_m",
+    "exit_lateral_offset_m",
+    "minimum_speed_lateral_offset_m",
+    "entry_velocity_cross_track_ms",
+    "exit_velocity_cross_track_ms",
+    "entry_heading_error_rad",
+    "exit_heading_error_rad",
+    "entry_gear",
+    "exit_gear",
+    "entry_rpm",
+    "exit_rpm",
+    "entry_throttle",
+    "exit_throttle",
+    "entry_brake",
+    "exit_brake",
+    "entry_steer",
+    "exit_steer",
+    "peak_abs_track_lat_g",
+    "minimum_track_long_g",
+    "is_complete_lap",
+    "is_valid_lap",
+    "valid_for_comparison",
+)
+
+SEGMENT_TABLE_SPECS = (
+    TableSpec(
+        "segments/passes",
+        column_specs(
+            _PASS_COLUMNS,
+            required=frozenset(
+                {
+                    "session_id",
+                    "lap_id",
+                    "segment_id",
+                    "segment_name",
+                    "valid_for_comparison",
+                    "segment_time_s",
+                    "entry_speed_kmh",
+                    "minimum_speed_kmh",
+                    "exit_speed_kmh",
+                    "brake_onset_track_s_m",
+                    "full_throttle_commit_track_s_m",
+                    "coasting_time_s",
+                }
+            ),
+            non_nullable=frozenset({"session_id", "lap_id", "segment_id"}),
+        ),
+        ("session_id", "lap_id", "segment_id"),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("session_id",), "sessions", ("session_id",)),
+            ForeignKey(("lap_id",), "laps", ("lap_id",)),
+            ForeignKey(("session_id", "lap_id"), "laps", ("session_id", "lap_id")),
+        ),
+        allows_untyped_empty_frame=True,
+        empty_frame_columns=(),
+    ),
+)
 
 
 def generate_segments_from_sections_ini(
@@ -30,7 +122,6 @@ def generate_segments_from_sections_ini(
         first = sections[0]
         segments.append(
             {
-
                 "id": f"start_to_{first.section_id.lower()}",
                 "name": f"Start to {first.name}",
                 "start": 0.0,

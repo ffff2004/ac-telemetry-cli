@@ -4,6 +4,7 @@ from typing import Any
 
 import pandas as pd
 
+from .contract_types import MergeMode, TableSpec, column_specs
 from .util import sha256_file, stable_id
 
 CATEGORY_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -26,6 +27,73 @@ CATEGORY_PREFIXES: tuple[tuple[str, str], ...] = (
     ("BUMP_STOP", "suspension"),
     ("PACKER", "suspension"),
     ("ROD_LENGTH", "ride_height"),
+)
+
+SETUP_TABLE_SPECS = (
+    TableSpec(
+        "setup/normalized",
+        column_specs(
+            (
+                "setup_id",
+                "setup_label",
+                "source_file",
+                "source_hash",
+                "section",
+                "parameter",
+                "raw_value",
+                "value_numeric",
+                "value_text",
+                "category",
+            ),
+            required=frozenset(
+                {
+                    "setup_id",
+                    "source_hash",
+                    "section",
+                    "parameter",
+                    "value_numeric",
+                    "value_text",
+                    "category",
+                }
+            ),
+            non_nullable=frozenset(
+                {
+                    "setup_id",
+                    "source_hash",
+                    "section",
+                    "parameter",
+                    "raw_value",
+                    "value_text",
+                    "category",
+                }
+            ),
+        ),
+        ("setup_id", "section", "parameter"),
+        False,
+        MergeMode.KEYED,
+        ignored_identity_columns=frozenset({"setup_label", "source_file"}),
+    ),
+    TableSpec(
+        "setup/diffs",
+        column_specs(
+            (
+                "base_setup_id",
+                "comparison_setup_id",
+                "section",
+                "parameter",
+                "category",
+                "base_value",
+                "comparison_value",
+                "absolute_numeric_change",
+                "values_equal",
+            )
+        ),
+        None,
+        False,
+        MergeMode.REBUILD,
+        rebuild_from=("setup/normalized",),
+        omit_if_empty=True,
+    ),
 )
 
 

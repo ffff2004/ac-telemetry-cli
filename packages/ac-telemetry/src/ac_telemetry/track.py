@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.spatial import cKDTree
 
 from .config import ProcessingConfig
+from .contract_types import MergeMode, TableSpec, column_specs
 from .sections import parse_sections_ini
 from .util import sha256_file
 
@@ -44,6 +45,59 @@ _AI_PAYLOAD_FIELDS = (
 )
 _PROJECTION_CHUNK_SIZE = 8_192
 _CANDIDATE_CHUNK_SIZE = 262_144
+
+_REFERENCE_COLUMNS = (
+    "reference_index",
+    "x",
+    "y",
+    "z",
+    "track_s_m",
+    "track_progress",
+    "stored_distance_m",
+    "tangent_x",
+    "tangent_y",
+    "tangent_z",
+    "heading_rad",
+    "curvature_1pm",
+    *_AI_PAYLOAD_FIELDS,
+)
+
+TRACK_TABLE_SPECS = (
+    TableSpec(
+        "track/reference",
+        column_specs(_REFERENCE_COLUMNS, non_nullable=frozenset({"reference_index"})),
+        ("reference_index",),
+        True,
+        MergeMode.STATIC_EQUAL,
+    ),
+    TableSpec(
+        "track/pit_reference",
+        column_specs(_REFERENCE_COLUMNS, non_nullable=frozenset({"reference_index"})),
+        ("reference_index",),
+        False,
+        MergeMode.STATIC_EQUAL,
+    ),
+    TableSpec(
+        "track/sections",
+        column_specs(
+            ("section_id", "section_name", "start_progress", "end_progress"),
+            non_nullable=frozenset({"section_id"}),
+        ),
+        ("section_id",),
+        False,
+        MergeMode.STATIC_EQUAL,
+    ),
+    TableSpec(
+        "track/drs_zones",
+        column_specs(
+            ("drs_zone_id", "detection_progress", "start_progress", "end_progress"),
+            non_nullable=frozenset({"drs_zone_id"}),
+        ),
+        ("drs_zone_id",),
+        False,
+        MergeMode.STATIC_EQUAL,
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,6 +3,52 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
+from .contract_types import MergeMode, TableSpec, column_specs
+
+_STATISTICS_COLUMNS = (
+    "setup_id",
+    "segment_id",
+    "segment_name",
+    "valid_pass_count",
+    "total_pass_count",
+    *(
+        f"{prefix}_{statistic}"
+        for prefix in (
+            "time_s",
+            "entry_speed_kmh",
+            "minimum_speed_kmh",
+            "exit_speed_kmh",
+            "brake_start_track_s_m",
+            "full_throttle_commit_track_s_m",
+            "coasting_time_s",
+        )
+        for statistic in (
+            "count",
+            "mean",
+            "median",
+            "std",
+            "mad",
+            "min",
+            "p25",
+            "p75",
+            "max",
+        )
+    ),
+    "best_3_mean_time_s",
+)
+
+SUMMARY_TABLE_SPECS = (
+    TableSpec(
+        "summaries/segment_statistics",
+        column_specs(_STATISTICS_COLUMNS),
+        None,
+        False,
+        MergeMode.REBUILD,
+        rebuild_from=("segments/passes", "sessions"),
+        empty_frame_columns=(),
+    ),
+)
+
 
 def _stats(group: pd.Series, prefix: str) -> dict[str, float | int | None]:
     values = pd.to_numeric(group, errors="coerce").dropna().to_numpy(float)

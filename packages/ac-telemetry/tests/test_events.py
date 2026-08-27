@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from ac_telemetry.config import ProcessingConfig
+from ac_telemetry.dataset_contract import DATASET_CONTRACT
 from ac_telemetry.events import VehicleProfile, detect_events
 
 
@@ -95,3 +96,37 @@ def test_shift_span_includes_neutral_transition() -> None:
     assert shift["end_sample_exclusive"] == 12
     assert shift["span_duration_s"] == pytest.approx(0.06)
     assert details["neutral_duration_s"] == pytest.approx(0.04)
+
+
+def test_empty_event_detail_tables_keep_the_serialized_empty_layout() -> None:
+    result = detect_events(_samples().iloc[0:0].copy(), ProcessingConfig())
+
+    for logical_name, frame in result.to_tables().items():
+        if logical_name not in {
+            "events/braking",
+            "events/throttle",
+            "events/shifts",
+            "events/wheel_slip",
+        }:
+            continue
+        spec = DATASET_CONTRACT.table(logical_name)
+        assert spec is not None
+        assert frame.empty
+        assert list(frame.columns) == list(spec.empty_frame_columns or ())
+        assert len(spec.columns) > len(frame.columns)
+
+
+def test_nonempty_event_detail_tables_keep_the_complete_declared_layout() -> None:
+    result = detect_events(_samples(), ProcessingConfig())
+
+    for logical_name in (
+        "events/braking",
+        "events/throttle",
+        "events/shifts",
+        "events/wheel_slip",
+    ):
+        frame = result.to_tables()[logical_name]
+        spec = DATASET_CONTRACT.table(logical_name)
+        assert spec is not None
+        assert not frame.empty
+        assert list(frame.columns) == [column.name for column in spec.columns]

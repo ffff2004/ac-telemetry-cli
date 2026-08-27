@@ -6,6 +6,7 @@ import pandas as pd
 
 from .assist_activity import detect_abs_activity, detect_tc_activity
 from .config import ProcessingConfig
+from .contract_types import ForeignKey, MergeMode, TableSpec, column_specs
 from .util import contiguous_true_runs, stable_id
 
 WHEELS = ("fl", "fr", "rl", "rr")
@@ -43,6 +44,164 @@ RELATION_COLUMNS = [
     "b_coverage",
     "gap_s",
 ]
+
+EVENT_TABLE_SPECS = (
+    TableSpec(
+        "events/index",
+        column_specs(
+            EVENT_INDEX_COLUMNS,
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("session_id",), "sessions", ("session_id",)),
+            ForeignKey(("lap_id",), "laps", ("lap_id",)),
+            ForeignKey(("session_id", "lap_id"), "laps", ("session_id", "lap_id")),
+        ),
+    ),
+    TableSpec(
+        "events/braking",
+        column_specs(
+            (
+                "event_id",
+                "entry_speed_kmh",
+                "release_speed_kmh",
+                "minimum_speed_kmh",
+                "peak_brake",
+                "mean_brake",
+                "brake_impulse_proxy_s",
+                "time_to_90pct_peak_s",
+                "release_duration_s",
+                "release_slope_per_s",
+                "release_monotonicity",
+                "steer_at_start",
+                "steer_at_release",
+            ),
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/throttle",
+        column_specs(
+            (
+                "event_id",
+                "start_speed_kmh",
+                "initial_throttle",
+                "peak_throttle",
+                "time_to_50pct_s",
+                "time_to_full_throttle_s",
+                "ramp_rate_per_s",
+                "steer_at_pickup",
+                "steer_at_full_throttle",
+                "velocity_heading_rate_at_pickup_rad_s",
+                "countersteer_proxy",
+                "throttle_lift_within_event",
+            ),
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/shifts",
+        column_specs(
+            (
+                "event_id",
+                "from_gear",
+                "to_gear",
+                "direction",
+                "speed_before_kmh",
+                "speed_after_kmh",
+                "rpm_before",
+                "rpm_after",
+                "rpm_delta",
+                "track_long_g_before",
+                "track_long_g_after",
+                "neutral_duration_s",
+            ),
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/wheel_slip",
+        column_specs(
+            (
+                "event_id",
+                "slip_kind",
+                "wheel",
+                "driven_status",
+                "extreme_slip_ratio",
+                "onset_slip_ratio",
+                "recovery_slip_ratio",
+                "mean_slip_ratio",
+                "slip_integral_s",
+                "entry_speed_kmh",
+                "exit_speed_kmh",
+                "mean_brake",
+                "mean_throttle",
+                "mean_wheel_load",
+                "mean_abs_steer",
+            ),
+            required=frozenset({"event_id"}),
+            non_nullable=frozenset({"event_id"}),
+        ),
+        ("event_id",),
+        False,
+        MergeMode.KEYED,
+        (ForeignKey(("event_id",), "events/index", ("event_id",)),),
+        empty_frame_columns=("event_id",),
+    ),
+    TableSpec(
+        "events/relations",
+        column_specs(
+            RELATION_COLUMNS,
+            required=frozenset({"relation_id", "event_id_a", "event_id_b"}),
+            non_nullable=frozenset({"relation_id", "event_id_a", "event_id_b"}),
+        ),
+        ("relation_id",),
+        False,
+        MergeMode.KEYED,
+        (
+            ForeignKey(("event_id_a",), "events/index", ("event_id",)),
+            ForeignKey(("event_id_b",), "events/index", ("event_id",)),
+        ),
+    ),
+)
+
+EVENT_TABLE_SPECS_BY_NAME = {table.name: table for table in EVENT_TABLE_SPECS}
+
+
+def _event_columns(logical_name: str) -> tuple[str, ...]:
+    return tuple(
+        column.name for column in EVENT_TABLE_SPECS_BY_NAME[logical_name].columns
+    )
+
+
+def _event_empty_columns(logical_name: str) -> tuple[str, ...]:
+    columns = EVENT_TABLE_SPECS_BY_NAME[logical_name].empty_frame_columns
+    if columns is None:
+        raise AssertionError(f"Event table {logical_name!r} has no empty layout")
+    return columns
+
 
 _COMMON_INTERNAL_COLUMNS = {
     "event_id",
@@ -585,13 +744,14 @@ def _event_index(frames: list[pd.DataFrame]) -> pd.DataFrame:
     )
 
 
-def _detail(frame: pd.DataFrame) -> pd.DataFrame:
+def _detail(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...],
+    empty_columns: tuple[str, ...],
+) -> pd.DataFrame:
     if frame.empty:
-        return pd.DataFrame(columns=["event_id"])
-    columns = ["event_id"] + [
-        column for column in frame.columns if column not in _COMMON_INTERNAL_COLUMNS
-    ]
-    return cast(pd.DataFrame, frame[columns].copy())
+        return pd.DataFrame(columns=empty_columns)
+    return cast(pd.DataFrame, frame[list(columns)].copy())
 
 
 def _active_sample_durations(row: pd.Series) -> dict[int, float]:
@@ -699,10 +859,26 @@ def detect_events(
     core_frames = [braking, throttle, shifts, wheel_slip]
     return EventDataset(
         events=_event_index(core_frames + [abs_activity, tc_activity]),
-        braking=_detail(braking),
-        throttle=_detail(throttle),
-        shifts=_detail(shifts),
-        wheel_slip=_detail(wheel_slip),
+        braking=_detail(
+            braking,
+            _event_columns("events/braking"),
+            _event_empty_columns("events/braking"),
+        ),
+        throttle=_detail(
+            throttle,
+            _event_columns("events/throttle"),
+            _event_empty_columns("events/throttle"),
+        ),
+        shifts=_detail(
+            shifts,
+            _event_columns("events/shifts"),
+            _event_empty_columns("events/shifts"),
+        ),
+        wheel_slip=_detail(
+            wheel_slip,
+            _event_columns("events/wheel_slip"),
+            _event_empty_columns("events/wheel_slip"),
+        ),
         relations=_build_relations(core_frames, config.event_near_shift_s),
         abs_activity=abs_activity,
         tc_activity=tc_activity,
