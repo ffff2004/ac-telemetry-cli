@@ -46,7 +46,7 @@ one CSV per selected car:
 
 ```bash
 uv run --package ac-replay-parser ac-replay-parser run.acreplay \
-  --output generated/
+  --output output/
 ```
 
 For multi-car replays, output files include the driver name. A single driver
@@ -55,7 +55,7 @@ can be selected with:
 ```bash
 uv run --package ac-replay-parser ac-replay-parser run.acreplay \
   --driver-name Alice \
-  --output alice.csv
+  --output output/alice.csv
 ```
 
 The `ac-replay-parser` CLI is implemented in [`cli.py`](src/ac_replay_parser/cli.py).

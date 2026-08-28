@@ -28,7 +28,7 @@ ac-telemetry preprocess \
   --track /path/to/assettocorsa/content/tracks/spa \
   --setup gear+aero.ini \
   --segments examples/spa_segments.json \
-  --output build/f2004-july
+  --output output/f2004-july
 ```
 
 ## Preprocess sessions with different setups
@@ -38,7 +38,7 @@ Create a dataset config similar to `examples/dataset.json`, then run:
 ```bash
 ac-telemetry preprocess \
   --config examples/dataset.json \
-  --output build/f2004-history
+  --output output/f2004-history
 ```
 
 Relative paths inside the config are resolved relative to the config file.
@@ -56,7 +56,7 @@ or stdin:
 ```bash
 ac-telemetry sections-to-segments \
   /path/to/assettocorsa/content/tracks/spa/data/sections.ini \
-  --output examples/spa_segments_generated.json
+  --output output/spa_segments_generated.json
 
 cat /path/to/sections.ini | ac-telemetry sections-to-segments - \
   --track spa
@@ -72,10 +72,10 @@ A multi-car replay is expanded into one session per car. Use
 ## Other commands
 
 ```bash
-ac-telemetry validate build/f2004-history
-ac-telemetry summarize build/f2004-history
-ac-telemetry export-csv build/f2004-history --table segments/passes --output passes.csv
-ac-telemetry merge build/session-a build/session-b --output build/combined
+ac-telemetry validate output/f2004-history
+ac-telemetry summarize output/f2004-history
+ac-telemetry export-csv output/f2004-history --table segments/passes --output output/passes.csv
+ac-telemetry merge output/session-a output/session-b --output output/combined
 ```
 
 `merge` accepts only complete datasets with the core `sessions`, `laps`,
@@ -150,7 +150,7 @@ preprocess_dataset(
             "driven_wheels": ["rl", "rr"],
         }
     ],
-    output_dir=Path("build/run"),
+    output_dir=Path("output/run"),
     track_dir=Path("/path/to/assettocorsa/content/tracks/spa"),
     segment_path=Path("examples/spa_segments.json"),
     config=ProcessingConfig(),
