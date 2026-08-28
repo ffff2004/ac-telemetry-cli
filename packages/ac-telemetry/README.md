@@ -11,7 +11,7 @@ is `.acreplay`; generated dataset tables are stored as Parquet. The
 ## Install
 
 ```bash
-uv sync --package ac-telemetry --extra dev
+uv tool install "ac-telemetry @ git+https://github.com/ffff2004/ac-telemetry-cli.git#subdirectory=packages/ac-telemetry"
 ```
 
 ## Inspect a replay

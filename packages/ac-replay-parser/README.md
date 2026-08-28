@@ -5,6 +5,12 @@ typed Python objects. It is the low-level package used by
 [`ac-telemetry`](../ac-telemetry/README.md); it does not depend on pandas or
 any other third-party package.
 
+## Install
+
+```bash
+uv tool install "ac-replay-parser @ git+https://github.com/ffff2004/ac-telemetry-cli.git#subdirectory=packages/ac-replay-parser"
+```
+
 ## Python API
 
 The primary API is `parse_replay_data()`. It accepts bytes and performs no
